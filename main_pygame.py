@@ -28,8 +28,14 @@ class Simulation:
 
     def __init__(self):
         pygame.init()
+        
+        monitor_info = pygame.display.Info()
 
-        self.screen = pygame.display.set_mode((render_constants.WINDOW_WIDTH, render_constants.WINDOW_HEIGHT))
+        # Extract the monitor's width and height
+        self.screen_width = monitor_info.current_w
+        self.screen_height = monitor_info.current_h
+
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height), pygame.RESIZABLE)
         pygame.display.set_caption("CEE 181/281 Modular Freeway Simulator (Pygame)")
         self.clock = pygame.time.Clock()
 
@@ -42,7 +48,7 @@ class Simulation:
             seed=simulation_constants.RANDOM_SEED,
         )
 
-        self.ROAD_PX_WIDTH = render_constants.WINDOW_WIDTH - 2 * render_constants.MARGIN_X
+        self.ROAD_PX_WIDTH = self.screen_width - 2 * render_constants.MARGIN_X
         self.SCALE_X = self.ROAD_PX_WIDTH / self.sim.length_m
 
         self.paused = False
@@ -53,7 +59,268 @@ class Simulation:
         self.hist_l0_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_l1_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_queue = deque(maxlen=render_constants.MAX_PTS)
+    
+    def render_series(self, chart_rect, data_deque, color, max_y=35.0):
+        if len(data_deque) < 2:
+            return
+        pts = []
+        plot_w = chart_rect.width - 65
+        plot_h = chart_rect.height - 65
+        for i, val in enumerate(data_deque):
+            px = chart_rect.left + 45 + int(
+                (i / render_constants.MAX_PTS) * plot_w
+            )
+            py = chart_rect.bottom - 25 - int((np.clip(val, 0.0, max_y) / max_y) * plot_h)
+            pts.append((px, py))
+        pygame.draw.lines(self.screen, color, False, pts, 2)
+    
+    def render_telemetry_chart(self):
+        chart_rect = pygame.Rect(50, 410, 860, 310)
+        pygame.draw.rect(self.screen, (32, 37, 46), chart_rect, border_radius=6)
+        pygame.draw.rect(self.screen, (70, 80, 95), chart_rect, 1, border_radius=6)
+        self.screen.blit(self.font_ui.render("LIVE TELEMETRY: Mainline Mean Speeds (m/s) & Unmet Boundary Queue (vehs)", True, (230, 235, 245)), (65, 420))
 
+        for val in [0, 10, 20, 30]:
+            gy = chart_rect.bottom - 25 - int((val / 35.0) * (chart_rect.height - 65))
+            pygame.draw.line(self.screen, (50, 56, 68), (chart_rect.left + 40, gy), (chart_rect.right - 15, gy), 1)
+            self.screen.blit(self.font_small.render(f"{val}", True, (140, 150, 165)), (chart_rect.left + 12, gy - 8))
+
+        self.render_series(chart_rect, self.hist_l0_speed, (80, 180, 255))
+        self.render_series(chart_rect, self.hist_l1_speed, (255, 165, 60))
+        self.render_series(chart_rect, self.hist_queue, (255, 80, 80))
+
+        self.screen.blit(self.font_small.render("── Lane 0 Speed (m/s)", True, (80, 180, 255)), (500, 422))
+        self.screen.blit(self.font_small.render("── Lane 1 Speed (m/s)", True, (255, 165, 60)), (640, 422))
+        self.screen.blit(self.font_small.render("── Boundary Queue (vehs)", True, (255, 80, 80)), (775, 422))
+
+
+    def render(self):
+        self.screen.fill((24, 28, 34))
+
+        # --- Top Header & Controls Bar ---
+        pygame.draw.rect(
+            self.screen,
+            (35, 40, 50),
+            (0, 0, self.screen_width, 95),
+        )
+        self.screen.blit(self.font_title.render("CEE 181/281 Freeway & Merging Simulator (Modular OOP)", True, (240, 245, 255)), (20, 12))
+
+        ctrl_text = (
+            f"[SPACE] {'Resume' if self.paused else 'Pause'}   |   "
+            f"[M] Ramp Meter: {'ON (450 vph)' if self.sim.ramp_meter_enabled else 'OFF'}   |   "
+            f"[B] Trigger Lead Braking Disturbance   |   "
+            f"[UP/DOWN] Speed: {self.sim_speed_mult}x   |   [R] Reset   |   [Click Car] Inspect"
+        )
+        self.screen.blit(self.font_ui.render(ctrl_text, True, (180, 210, 255)), (20, 44))
+
+        active_count = sum(len(v) for v in self.sim.lanes.values())
+        stats_line = (
+            f"Sim Time: {self.sim.time_s:6.1f}s   |   Active Vehs: {active_count:3d}   |   "
+            f"Completed Trips: {self.sim.total_exited_vehicles:4d}   |   "
+            f"Boundary Entry Queues -> L0: {len(self.sim.entry_queues[0])}  L1: {len(self.sim.entry_queues[1])}  Ramp: {len(self.sim.entry_queues[2])}"
+        )
+        self.screen.blit(self.font_ui.render(stats_line, True, (220, 220, 220)), (20, 68))
+
+        # --- Draw Highway Asphalt & Geometry ---
+        mainline_top = render_constants.LANE_Y[0] - render_constants.LANE_WIDTH_PX // 2
+        pygame.draw.rect(
+            self.screen,
+            (52, 56, 64),
+            (
+                render_constants.MARGIN_X,
+                mainline_top,
+                self.ROAD_PX_WIDTH,
+                render_constants.LANE_WIDTH_PX * 2 + 10,
+            ),
+        )
+
+        ramp_x1 = render_constants.MARGIN_X + int(self.sim.ramp_start_m * self.SCALE_X)
+        ramp_x2 = render_constants.MARGIN_X + int(self.sim.merge_zone_start_m * self.SCALE_X)
+        ramp_x3 = render_constants.MARGIN_X + int(self.sim.merge_zone_end_m * self.SCALE_X)
+        ramp_y = render_constants.LANE_Y[2]
+
+        ramp_poly = [
+            (ramp_x1, ramp_y - 16),
+            (ramp_x2, mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8),
+            (ramp_x3, mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8),
+            (ramp_x3 + 25, mainline_top + render_constants.LANE_WIDTH_PX * 2),
+            (ramp_x2, ramp_y + 18),
+            (ramp_x1, ramp_y + 18)
+        ]
+        pygame.draw.polygon(self.screen, (52, 56, 64), ramp_poly)
+
+        merge_w = ramp_x3 - ramp_x2
+        merge_surf = pygame.Surface(
+            (merge_w, render_constants.LANE_WIDTH_PX + 35),
+            pygame.SRCALPHA,
+        )
+        merge_surf.fill((255, 165, 0, 35))
+        self.screen.blit(merge_surf, (ramp_x2, render_constants.LANE_Y[1]))
+        self.screen.blit(
+            self.font_small.render(
+                "ACCELERATION & MERGE ZONE (350m - 620m)",
+                True,
+                (255, 190, 90),
+            ),
+            (ramp_x2 + 10, render_constants.LANE_Y[2] + 24),
+        )
+
+        pygame.draw.line(
+            self.screen,
+            (230, 230, 230),
+            (render_constants.MARGIN_X, mainline_top),
+            (render_constants.MARGIN_X + self.ROAD_PX_WIDTH, mainline_top),
+            3,
+        )
+        for x_dash in range(
+            render_constants.MARGIN_X,
+            render_constants.MARGIN_X + self.ROAD_PX_WIDTH,
+            36,
+        ):
+            pygame.draw.line(
+                self.screen,
+                (200, 200, 200),
+                (x_dash, render_constants.LANE_Y[0] + 22),
+                (x_dash + 18, render_constants.LANE_Y[0] + 22),
+                2,
+            )
+
+        bot_y = mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8
+        pygame.draw.line(
+            self.screen,
+            (230, 230, 230),
+            (render_constants.MARGIN_X, bot_y),
+            (ramp_x2, bot_y),
+            3,
+        )
+        pygame.draw.line(
+            self.screen,
+            (230, 230, 230),
+            (ramp_x3, bot_y),
+            (render_constants.MARGIN_X + self.ROAD_PX_WIDTH, bot_y),
+            3,
+        )
+        for x_dash in range(ramp_x2, ramp_x3, 24):
+            pygame.draw.line(self.screen, (255, 200, 80), (x_dash, bot_y), (x_dash + 12, bot_y), 2)
+
+        for m in range(0, 1001, 100):
+            tx = render_constants.MARGIN_X + int(m * self.SCALE_X)
+            pygame.draw.line(self.screen, (120, 130, 145), (tx, mainline_top - 8), (tx, mainline_top), 2)
+            self.screen.blit(self.font_small.render(f"{m}m", True, (150, 160, 175)), (tx - 14, mainline_top - 24))
+
+        # --- Virtual Loop Detectors ---
+        for det in self.sim.detectors:
+            dx = render_constants.MARGIN_X + int(det.position_m * self.SCALE_X)
+            dy = render_constants.LANE_Y[det.lane_id]
+            is_flashing = (self.sim.time_s - det.last_flash_time_s) < 0.25
+            det_color = (0, 255, 255) if is_flashing else (70, 130, 200)
+            pygame.draw.rect(self.screen, det_color, (dx - 3, dy - 12, 6, 24), 2 if not is_flashing else 0)
+            if det.lane_id == 0:
+                self.screen.blit(self.font_small.render(det.sensor_id, True, (120, 175, 230)), (dx - 28, mainline_top - 42))
+
+        # --- Ramp Meter Signal ---
+        meter_x = render_constants.MARGIN_X + int(self.sim.meter_stop_line_m * self.SCALE_X)
+        pygame.draw.line(
+            self.screen,
+            (255, 255, 255),
+            (meter_x, render_constants.LANE_Y[2] - 15),
+            (meter_x, render_constants.LANE_Y[2] + 15),
+            3,
+        )
+        light_color = (60, 235, 80) if self.sim.meter_is_green else (245, 50, 50)
+        if not self.sim.ramp_meter_enabled:
+            light_color = (120, 120, 120)
+        pygame.draw.circle(
+            self.screen,
+            (20, 20, 20),
+            (meter_x, render_constants.LANE_Y[2] - 28),
+            10,
+        )
+        pygame.draw.circle(
+            self.screen,
+            light_color,
+            (meter_x, render_constants.LANE_Y[2] - 28),
+            7,
+        )
+        self.screen.blit(
+            self.font_small.render("METER", True, (200, 200, 200)),
+            (meter_x - 18, render_constants.LANE_Y[2] - 52),
+        )
+
+        # --- Draw Vehicles ---
+        for vehs in self.sim.lanes.values():
+            for v in vehs:
+                vx = render_constants.MARGIN_X + v.position_m * self.SCALE_X
+                if v.visual_lane <= 1.0:
+                    vy = render_constants.LANE_Y[0] + v.visual_lane * (
+                        render_constants.LANE_Y[1] - render_constants.LANE_Y[0]
+                    )
+                else:
+                    taper_ratio = 0.0
+                    if v.lane_id == 2 and v.position_m > self.sim.merge_zone_start_m:
+                        taper_ratio = (v.position_m - self.sim.merge_zone_start_m) / (self.sim.merge_zone_end_m - self.sim.merge_zone_start_m)
+                    vy = (
+                        render_constants.LANE_Y[2] - taper_ratio * 22.0
+                        if v.lane_id == 2
+                        else render_constants.LANE_Y[1]
+                        + (v.visual_lane - 1.0)
+                        * (render_constants.LANE_Y[2] - render_constants.LANE_Y[1])
+                    )
+
+                vw = max(10, int(v.length_m * self.SCALE_X))
+                vh = 16 if v.veh_type == "truck" else 12
+
+                color = (255, 60, 255) if v.forced_brake_timer_s > 0 else speed_to_color(v.speed_mps)
+                rect = pygame.Rect(int(vx - vw), int(vy - vh // 2), vw, vh)
+
+                pygame.draw.rect(self.screen, color, rect, border_radius=3)
+                pygame.draw.rect(self.screen, (15, 15, 15), rect, 1, border_radius=3)
+
+                if v.acceleration_mps2 < -1.0:
+                    pygame.draw.rect(self.screen, (255, 20, 20), (rect.left, rect.top + 2, 3, vh - 4))
+
+                if self.selected_veh is not None and v.vehicle_id == self.selected_veh.vehicle_id:
+                    pygame.draw.rect(self.screen, (0, 255, 255), rect.inflate(6, 6), 2, border_radius=4)
+
+        self.render_telemetry_chart()
+        
+        # --- Vehicle Z-Score & IDM Inspector ---
+        insp_rect = pygame.Rect(935, 410, 415, 310)
+        pygame.draw.rect(self.screen, (32, 37, 46), insp_rect, border_radius=6)
+        pygame.draw.rect(self.screen, (70, 80, 95), insp_rect, 1, border_radius=6)
+        self.screen.blit(self.font_ui.render("VEHICLE & Z-SCORE INSPECTOR", True, (0, 230, 230)), (950, 420))
+
+        if self.selected_veh is not None:
+            pct = StatParam.z_to_percentile(self.selected_veh.driver_z_score)
+            lines = [
+                f"Vehicle ID       : #{self.selected_veh.vehicle_id} ({self.selected_veh.veh_type.upper()})",
+                f"Current Lane     : Lane {self.selected_veh.lane_id}",
+                f"Position (x)     : {self.selected_veh.position_m:6.1f} m",
+                f"Current Speed (v): {self.selected_veh.speed_mps:6.2f} m/s ({self.selected_veh.speed_mps * 2.237:.1f} mph)",
+                f"IDM Accel (dv/dt): {self.selected_veh.acceleration_mps2:+6.2f} m/s²",
+                "-----------------------------------------",
+                f"Driver Z-Score   : {self.selected_veh.driver_z_score:+5.2f} ({pct:.1f}th Percentile)",
+                f"Desired Speed v0 : {self.selected_veh.v0_mps:5.2f} m/s",
+                f"Safe Headway T   : {self.selected_veh.T_s:5.2f} s",
+                f"Max Accel (a)    : {self.selected_veh.a_mps2:5.2f} m/s²",
+                f"Comfort Decel (b): {self.selected_veh.b_mps2:5.2f} m/s²",
+                f"Min Jam Gap (s0) : {self.selected_veh.s0_m:5.2f} m",
+                f"MOBIL Politeness : {self.selected_veh.politeness:5.2f}",
+            ]
+            for idx, text_line in enumerate(lines):
+                self.screen.blit(self.font_ui.render(text_line, True, (220, 230, 240)), (950, 452 + idx * 19))
+        else:
+            self.screen.blit(self.font_ui.render("Click on any moving vehicle on the", True, (150, 160, 175)), (950, 470))
+            self.screen.blit(self.font_ui.render("highway to inspect its live IDM state,", True, (150, 160, 175)), (950, 492))
+            self.screen.blit(self.font_ui.render("sampled Z-score, and percentile traits.", True, (150, 160, 175)), (950, 514))
+
+            if self.sim.observation_log:
+                last_obs = self.sim.observation_log[-1]
+                self.screen.blit(self.font_ui.render("Latest Virtual Detector Reading:", True, (180, 210, 255)), (950, 575))
+                self.screen.blit(self.font_ui.render(f"Sensor : {last_obs['sensor_id']} ({last_obs['interval_start_s']}s-{last_obs['interval_end_s']}s)", True, (210, 215, 225)), (950, 600))
+                self.screen.blit(self.font_ui.render(f"Count  : {last_obs['count']} vehs | Mean Speed: {last_obs['mean_speed_mps']} m/s", True, (210, 215, 225)), (950, 622))
+        
+        pygame.display.flip()
 
     def run(self):
         self.running = True
@@ -114,266 +381,9 @@ class Simulation:
                 self.hist_l1_speed.append(l1_s)
                 self.hist_queue.append(tot_q)
 
-            self.screen.fill((24, 28, 34))
-
-            # --- Top Header & Controls Bar ---
-            pygame.draw.rect(
-                self.screen,
-                (35, 40, 50),
-                (0, 0, render_constants.WINDOW_WIDTH, 95),
-            )
-            self.screen.blit(self.font_title.render("CEE 181/281 Freeway & Merging Simulator (Modular OOP)", True, (240, 245, 255)), (20, 12))
-
-            ctrl_text = (
-                f"[SPACE] {'Resume' if self.paused else 'Pause'}   |   "
-                f"[M] Ramp Meter: {'ON (450 vph)' if self.sim.ramp_meter_enabled else 'OFF'}   |   "
-                f"[B] Trigger Lead Braking Disturbance   |   "
-                f"[UP/DOWN] Speed: {self.sim_speed_mult}x   |   [R] Reset   |   [Click Car] Inspect"
-            )
-            self.screen.blit(self.font_ui.render(ctrl_text, True, (180, 210, 255)), (20, 44))
-
-            active_count = sum(len(v) for v in self.sim.lanes.values())
-            stats_line = (
-                f"Sim Time: {self.sim.time_s:6.1f}s   |   Active Vehs: {active_count:3d}   |   "
-                f"Completed Trips: {self.sim.total_exited_vehicles:4d}   |   "
-                f"Boundary Entry Queues -> L0: {len(self.sim.entry_queues[0])}  L1: {len(self.sim.entry_queues[1])}  Ramp: {len(self.sim.entry_queues[2])}"
-            )
-            self.screen.blit(self.font_ui.render(stats_line, True, (220, 220, 220)), (20, 68))
-
-            # --- Draw Highway Asphalt & Geometry ---
-            mainline_top = render_constants.LANE_Y[0] - render_constants.LANE_WIDTH_PX // 2
-            pygame.draw.rect(
-                self.screen,
-                (52, 56, 64),
-                (
-                    render_constants.MARGIN_X,
-                    mainline_top,
-                    self.ROAD_PX_WIDTH,
-                    render_constants.LANE_WIDTH_PX * 2 + 10,
-                ),
-            )
-
-            ramp_x1 = render_constants.MARGIN_X + int(self.sim.ramp_start_m * self.SCALE_X)
-            ramp_x2 = render_constants.MARGIN_X + int(self.sim.merge_zone_start_m * self.SCALE_X)
-            ramp_x3 = render_constants.MARGIN_X + int(self.sim.merge_zone_end_m * self.SCALE_X)
-            ramp_y = render_constants.LANE_Y[2]
-
-            ramp_poly = [
-                (ramp_x1, ramp_y - 16),
-                (ramp_x2, mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8),
-                (ramp_x3, mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8),
-                (ramp_x3 + 25, mainline_top + render_constants.LANE_WIDTH_PX * 2),
-                (ramp_x2, ramp_y + 18),
-                (ramp_x1, ramp_y + 18)
-            ]
-            pygame.draw.polygon(self.screen, (52, 56, 64), ramp_poly)
-
-            merge_w = ramp_x3 - ramp_x2
-            merge_surf = pygame.Surface(
-                (merge_w, render_constants.LANE_WIDTH_PX + 35),
-                pygame.SRCALPHA,
-            )
-            merge_surf.fill((255, 165, 0, 35))
-            self.screen.blit(merge_surf, (ramp_x2, render_constants.LANE_Y[1]))
-            self.screen.blit(
-                self.font_small.render(
-                    "ACCELERATION & MERGE ZONE (350m - 620m)",
-                    True,
-                    (255, 190, 90),
-                ),
-                (ramp_x2 + 10, render_constants.LANE_Y[2] + 24),
-            )
-
-            pygame.draw.line(
-                self.screen,
-                (230, 230, 230),
-                (render_constants.MARGIN_X, mainline_top),
-                (render_constants.MARGIN_X + self.ROAD_PX_WIDTH, mainline_top),
-                3,
-            )
-            for x_dash in range(
-                render_constants.MARGIN_X,
-                render_constants.MARGIN_X + self.ROAD_PX_WIDTH,
-                36,
-            ):
-                pygame.draw.line(
-                    self.screen,
-                    (200, 200, 200),
-                    (x_dash, render_constants.LANE_Y[0] + 22),
-                    (x_dash + 18, render_constants.LANE_Y[0] + 22),
-                    2,
-                )
-
-            bot_y = mainline_top + render_constants.LANE_WIDTH_PX * 2 + 8
-            pygame.draw.line(
-                self.screen,
-                (230, 230, 230),
-                (render_constants.MARGIN_X, bot_y),
-                (ramp_x2, bot_y),
-                3,
-            )
-            pygame.draw.line(
-                self.screen,
-                (230, 230, 230),
-                (ramp_x3, bot_y),
-                (render_constants.MARGIN_X + self.ROAD_PX_WIDTH, bot_y),
-                3,
-            )
-            for x_dash in range(ramp_x2, ramp_x3, 24):
-                pygame.draw.line(self.screen, (255, 200, 80), (x_dash, bot_y), (x_dash + 12, bot_y), 2)
-
-            for m in range(0, 1001, 100):
-                tx = render_constants.MARGIN_X + int(m * self.SCALE_X)
-                pygame.draw.line(self.screen, (120, 130, 145), (tx, mainline_top - 8), (tx, mainline_top), 2)
-                self.screen.blit(self.font_small.render(f"{m}m", True, (150, 160, 175)), (tx - 14, mainline_top - 24))
-
-            # --- Virtual Loop Detectors ---
-            for det in self.sim.detectors:
-                dx = render_constants.MARGIN_X + int(det.position_m * self.SCALE_X)
-                dy = render_constants.LANE_Y[det.lane_id]
-                is_flashing = (self.sim.time_s - det.last_flash_time_s) < 0.25
-                det_color = (0, 255, 255) if is_flashing else (70, 130, 200)
-                pygame.draw.rect(self.screen, det_color, (dx - 3, dy - 12, 6, 24), 2 if not is_flashing else 0)
-                if det.lane_id == 0:
-                    self.screen.blit(self.font_small.render(det.sensor_id, True, (120, 175, 230)), (dx - 28, mainline_top - 42))
-
-            # --- Ramp Meter Signal ---
-            meter_x = render_constants.MARGIN_X + int(self.sim.meter_stop_line_m * self.SCALE_X)
-            pygame.draw.line(
-                self.screen,
-                (255, 255, 255),
-                (meter_x, render_constants.LANE_Y[2] - 15),
-                (meter_x, render_constants.LANE_Y[2] + 15),
-                3,
-            )
-            light_color = (60, 235, 80) if self.sim.meter_is_green else (245, 50, 50)
-            if not self.sim.ramp_meter_enabled:
-                light_color = (120, 120, 120)
-            pygame.draw.circle(
-                self.screen,
-                (20, 20, 20),
-                (meter_x, render_constants.LANE_Y[2] - 28),
-                10,
-            )
-            pygame.draw.circle(
-                self.screen,
-                light_color,
-                (meter_x, render_constants.LANE_Y[2] - 28),
-                7,
-            )
-            self.screen.blit(
-                self.font_small.render("METER", True, (200, 200, 200)),
-                (meter_x - 18, render_constants.LANE_Y[2] - 52),
-            )
-
-            # --- Draw Vehicles ---
-            for vehs in self.sim.lanes.values():
-                for v in vehs:
-                    vx = render_constants.MARGIN_X + v.position_m * self.SCALE_X
-                    if v.visual_lane <= 1.0:
-                        vy = render_constants.LANE_Y[0] + v.visual_lane * (
-                            render_constants.LANE_Y[1] - render_constants.LANE_Y[0]
-                        )
-                    else:
-                        taper_ratio = 0.0
-                        if v.lane_id == 2 and v.position_m > self.sim.merge_zone_start_m:
-                            taper_ratio = (v.position_m - self.sim.merge_zone_start_m) / (self.sim.merge_zone_end_m - self.sim.merge_zone_start_m)
-                        vy = (
-                            render_constants.LANE_Y[2] - taper_ratio * 22.0
-                            if v.lane_id == 2
-                            else render_constants.LANE_Y[1]
-                            + (v.visual_lane - 1.0)
-                            * (render_constants.LANE_Y[2] - render_constants.LANE_Y[1])
-                        )
-
-                    vw = max(10, int(v.length_m * self.SCALE_X))
-                    vh = 16 if v.veh_type == "truck" else 12
-
-                    color = (255, 60, 255) if v.forced_brake_timer_s > 0 else speed_to_color(v.speed_mps)
-                    rect = pygame.Rect(int(vx - vw), int(vy - vh // 2), vw, vh)
-
-                    pygame.draw.rect(self.screen, color, rect, border_radius=3)
-                    pygame.draw.rect(self.screen, (15, 15, 15), rect, 1, border_radius=3)
-
-                    if v.acceleration_mps2 < -1.0:
-                        pygame.draw.rect(self.screen, (255, 20, 20), (rect.left, rect.top + 2, 3, vh - 4))
-
-                    if self.selected_veh is not None and v.vehicle_id == self.selected_veh.vehicle_id:
-                        pygame.draw.rect(self.screen, (0, 255, 255), rect.inflate(6, 6), 2, border_radius=4)
-
-            # --- Live Telemetry Chart ---
-            chart_rect = pygame.Rect(50, 410, 860, 310)
-            pygame.draw.rect(self.screen, (32, 37, 46), chart_rect, border_radius=6)
-            pygame.draw.rect(self.screen, (70, 80, 95), chart_rect, 1, border_radius=6)
-            self.screen.blit(self.font_ui.render("LIVE TELEMETRY: Mainline Mean Speeds (m/s) & Unmet Boundary Queue (vehs)", True, (230, 235, 245)), (65, 420))
-
-            for val in [0, 10, 20, 30]:
-                gy = chart_rect.bottom - 25 - int((val / 35.0) * (chart_rect.height - 65))
-                pygame.draw.line(self.screen, (50, 56, 68), (chart_rect.left + 40, gy), (chart_rect.right - 15, gy), 1)
-                self.screen.blit(self.font_small.render(f"{val}", True, (140, 150, 165)), (chart_rect.left + 12, gy - 8))
-
-            def draw_series(data_deque, color, max_y=35.0):
-                if len(data_deque) < 2:
-                    return
-                pts = []
-                plot_w = chart_rect.width - 65
-                plot_h = chart_rect.height - 65
-                for i, val in enumerate(data_deque):
-                    px = chart_rect.left + 45 + int(
-                        (i / render_constants.MAX_PTS) * plot_w
-                    )
-                    py = chart_rect.bottom - 25 - int((np.clip(val, 0.0, max_y) / max_y) * plot_h)
-                    pts.append((px, py))
-                pygame.draw.lines(self.screen, color, False, pts, 2)
-
-            draw_series(self.hist_l0_speed, (80, 180, 255))
-            draw_series(self.hist_l1_speed, (255, 165, 60))
-            draw_series(self.hist_queue, (255, 80, 80))
-
-            self.screen.blit(self.font_small.render("── Lane 0 Speed (m/s)", True, (80, 180, 255)), (500, 422))
-            self.screen.blit(self.font_small.render("── Lane 1 Speed (m/s)", True, (255, 165, 60)), (640, 422))
-            self.screen.blit(self.font_small.render("── Boundary Queue (vehs)", True, (255, 80, 80)), (775, 422))
-
-            # --- Vehicle Z-Score & IDM Inspector ---
-            insp_rect = pygame.Rect(935, 410, 415, 310)
-            pygame.draw.rect(self.screen, (32, 37, 46), insp_rect, border_radius=6)
-            pygame.draw.rect(self.screen, (70, 80, 95), insp_rect, 1, border_radius=6)
-            self.screen.blit(self.font_ui.render("VEHICLE & Z-SCORE INSPECTOR", True, (0, 230, 230)), (950, 420))
-
-            if self.selected_veh is not None:
-                pct = StatParam.z_to_percentile(self.selected_veh.driver_z_score)
-                lines = [
-                    f"Vehicle ID       : #{self.selected_veh.vehicle_id} ({self.selected_veh.veh_type.upper()})",
-                    f"Current Lane     : Lane {self.selected_veh.lane_id}",
-                    f"Position (x)     : {self.selected_veh.position_m:6.1f} m",
-                    f"Current Speed (v): {self.selected_veh.speed_mps:6.2f} m/s ({self.selected_veh.speed_mps * 2.237:.1f} mph)",
-                    f"IDM Accel (dv/dt): {self.selected_veh.acceleration_mps2:+6.2f} m/s²",
-                    "-----------------------------------------",
-                    f"Driver Z-Score   : {self.selected_veh.driver_z_score:+5.2f} ({pct:.1f}th Percentile)",
-                    f"Desired Speed v0 : {self.selected_veh.v0_mps:5.2f} m/s",
-                    f"Safe Headway T   : {self.selected_veh.T_s:5.2f} s",
-                    f"Max Accel (a)    : {self.selected_veh.a_mps2:5.2f} m/s²",
-                    f"Comfort Decel (b): {self.selected_veh.b_mps2:5.2f} m/s²",
-                    f"Min Jam Gap (s0) : {self.selected_veh.s0_m:5.2f} m",
-                    f"MOBIL Politeness : {self.selected_veh.politeness:5.2f}",
-                ]
-                for idx, text_line in enumerate(lines):
-                    self.screen.blit(self.font_ui.render(text_line, True, (220, 230, 240)), (950, 452 + idx * 19))
-            else:
-                self.screen.blit(self.font_ui.render("Click on any moving vehicle on the", True, (150, 160, 175)), (950, 470))
-                self.screen.blit(self.font_ui.render("highway to inspect its live IDM state,", True, (150, 160, 175)), (950, 492))
-                self.screen.blit(self.font_ui.render("sampled Z-score, and percentile traits.", True, (150, 160, 175)), (950, 514))
-
-                if self.sim.observation_log:
-                    last_obs = self.sim.observation_log[-1]
-                    self.screen.blit(self.font_ui.render("Latest Virtual Detector Reading:", True, (180, 210, 255)), (950, 575))
-                    self.screen.blit(self.font_ui.render(f"Sensor : {last_obs['sensor_id']} ({last_obs['interval_start_s']}s-{last_obs['interval_end_s']}s)", True, (210, 215, 225)), (950, 600))
-                    self.screen.blit(self.font_ui.render(f"Count  : {last_obs['count']} vehs | Mean Speed: {last_obs['mean_speed_mps']} m/s", True, (210, 215, 225)), (950, 622))
-
-            pygame.display.flip()
+            self.render()
+            
             self.clock.tick(render_constants.FRAME_RATE)
-
-
 
 
 def run_pygame_sim():
