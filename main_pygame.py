@@ -28,14 +28,20 @@ class Simulation:
 
     def __init__(self):
         pygame.init()
-        
-        monitor_info = pygame.display.Info()
 
-        # Extract the monitor's width and height
-        self.screen_width = monitor_info.current_w
-        self.screen_height = monitor_info.current_h
-
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height), pygame.RESIZABLE)
+        self.window = pygame.display.set_mode(
+            (render_constants.WINDOW_WIDTH, render_constants.WINDOW_HEIGHT),
+            pygame.RESIZABLE,
+        )
+        self.screen = pygame.Surface(
+            (render_constants.WINDOW_WIDTH, render_constants.WINDOW_HEIGHT)
+        )
+        self.viewport = pygame.Rect(
+            0,
+            0,
+            render_constants.WINDOW_WIDTH,
+            render_constants.WINDOW_HEIGHT,
+        )
         pygame.display.set_caption("CEE 181/281 Modular Freeway Simulator (Pygame)")
         self.clock = pygame.time.Clock()
 
@@ -48,7 +54,9 @@ class Simulation:
             seed=simulation_constants.RANDOM_SEED,
         )
 
-        self.ROAD_PX_WIDTH = self.screen_width - 2 * render_constants.MARGIN_X
+        self.ROAD_PX_WIDTH = (
+            render_constants.WINDOW_WIDTH - 2 * render_constants.MARGIN_X
+        )
         self.SCALE_X = self.ROAD_PX_WIDTH / self.sim.length_m
 
         self.paused = False
@@ -59,6 +67,53 @@ class Simulation:
         self.hist_l0_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_l1_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_queue = deque(maxlen=render_constants.MAX_PTS)
+
+    def window_to_canvas_position(
+        self, position: Tuple[int, int]
+    ) -> Optional[Tuple[int, int]]:
+        window_width, window_height = self.window.get_size()
+        scale = min(
+            window_width / render_constants.WINDOW_WIDTH,
+            window_height / render_constants.WINDOW_HEIGHT,
+        )
+        viewport_width = int(render_constants.WINDOW_WIDTH * scale)
+        viewport_height = int(render_constants.WINDOW_HEIGHT * scale)
+        viewport = pygame.Rect(
+            (window_width - viewport_width) // 2,
+            (window_height - viewport_height) // 2,
+            viewport_width,
+            viewport_height,
+        )
+        if not viewport.collidepoint(position):
+            return None
+
+        return (
+            int((position[0] - viewport.left) / scale),
+            int((position[1] - viewport.top) / scale),
+        )
+
+    def present(self) -> None:
+        window_width, window_height = self.window.get_size()
+        scale = min(
+            window_width / render_constants.WINDOW_WIDTH,
+            window_height / render_constants.WINDOW_HEIGHT,
+        )
+        viewport_width = int(render_constants.WINDOW_WIDTH * scale)
+        viewport_height = int(render_constants.WINDOW_HEIGHT * scale)
+        self.viewport = pygame.Rect(
+            (window_width - viewport_width) // 2,
+            (window_height - viewport_height) // 2,
+            viewport_width,
+            viewport_height,
+        )
+
+        self.window.fill((0, 0, 0))
+        scaled_screen = pygame.transform.smoothscale(
+            self.screen,
+            self.viewport.size,
+        )
+        self.window.blit(scaled_screen, self.viewport)
+        pygame.display.flip()
     
     def render_series(self, chart_rect, data_deque, color, max_y=35.0):
         if len(data_deque) < 2:
@@ -78,7 +133,10 @@ class Simulation:
         chart_rect = pygame.Rect(50, 410, 860, 310)
         pygame.draw.rect(self.screen, (32, 37, 46), chart_rect, border_radius=6)
         pygame.draw.rect(self.screen, (70, 80, 95), chart_rect, 1, border_radius=6)
-        self.screen.blit(self.font_ui.render("LIVE TELEMETRY: Mainline Mean Speeds (m/s) & Unmet Boundary Queue (vehs)", True, (230, 235, 245)), (65, 420))
+        self.screen.blit(
+            self.font_ui.render("LIVE TELEMETRY", True, (230, 235, 245)),
+            (65, 420),
+        )
 
         for val in [0, 10, 20, 30]:
             gy = chart_rect.bottom - 25 - int((val / 35.0) * (chart_rect.height - 65))
@@ -89,9 +147,17 @@ class Simulation:
         self.render_series(chart_rect, self.hist_l1_speed, (255, 165, 60))
         self.render_series(chart_rect, self.hist_queue, (255, 80, 80))
 
-        self.screen.blit(self.font_small.render("── Lane 0 Speed (m/s)", True, (80, 180, 255)), (500, 422))
-        self.screen.blit(self.font_small.render("── Lane 1 Speed (m/s)", True, (255, 165, 60)), (640, 422))
-        self.screen.blit(self.font_small.render("── Boundary Queue (vehs)", True, (255, 80, 80)), (775, 422))
+        legend_items = (
+            (310, "L0 speed (m/s)", (80, 180, 255)),
+            (465, "L1 speed (m/s)", (255, 165, 60)),
+            (620, "Queue", (255, 80, 80)),
+        )
+        for x, label, color in legend_items:
+            pygame.draw.line(self.screen, color, (x, 428), (x + 16, 428), 2)
+            self.screen.blit(
+                self.font_small.render(label, True, color),
+                (x + 22, 420),
+            )
 
 
     def render(self):
@@ -101,7 +167,7 @@ class Simulation:
         pygame.draw.rect(
             self.screen,
             (35, 40, 50),
-            (0, 0, self.screen_width, 95),
+            (0, 0, render_constants.WINDOW_WIDTH, 95),
         )
         self.screen.blit(self.font_title.render("CEE 181/281 Freeway & Merging Simulator (Modular OOP)", True, (240, 245, 255)), (20, 12))
 
@@ -320,7 +386,7 @@ class Simulation:
                 self.screen.blit(self.font_ui.render(f"Sensor : {last_obs['sensor_id']} ({last_obs['interval_start_s']}s-{last_obs['interval_end_s']}s)", True, (210, 215, 225)), (950, 600))
                 self.screen.blit(self.font_ui.render(f"Count  : {last_obs['count']} vehs | Mean Speed: {last_obs['mean_speed_mps']} m/s", True, (210, 215, 225)), (950, 622))
         
-        pygame.display.flip()
+        self.present()
 
     def run(self):
         self.running = True
@@ -329,6 +395,11 @@ class Simulation:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    self.window = pygame.display.set_mode(
+                        event.size,
+                        pygame.RESIZABLE,
+                    )
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         self.paused = not self.paused
@@ -356,7 +427,10 @@ class Simulation:
                         self.hist_queue.clear()
                         self.selected_veh = None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    mx, my = event.pos
+                    canvas_position = self.window_to_canvas_position(event.pos)
+                    if canvas_position is None:
+                        continue
+                    mx, my = canvas_position
                     self.selected_veh = None
                     for lane_vehs in self.sim.lanes.values():
                         for v in lane_vehs:
