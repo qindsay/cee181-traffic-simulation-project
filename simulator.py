@@ -136,22 +136,18 @@ class HighwaySimulator:
                 break
         return leader, follower
 
-    def _process_merging_and_lane_changes(self):
+    def _process_merging_and_lane_changes(self) -> None:
+        """Apply mandatory ramp merges, then discretionary lane changes."""
         self._sort_lanes()
+        self._process_ramp_merges()
+        self._process_discretionary_lane_changes()
 
-        # 1. Mandatory Merging: Ramp (Lane 2) -> Right Mainline (Lane 1)
-        remaining_ramp = []
+    def _process_ramp_merges(self) -> None:
+        """Move ramp vehicles into lane 1 when a safe merge gap is available."""
+        remaining_ramp: List[Vehicle] = []
         for veh in self.lanes[2]:
             if self.merge_zone_start_m <= veh.position_m <= self.merge_zone_end_m:
-                leader_1, follower_1 = self._find_neighbors(1, veh.position_m)
-                gap_ahead = (leader_1.position_m - veh.position_m - leader_1.length_m) if leader_1 else 999.0
-                gap_behind = (veh.position_m - follower_1.position_m - veh.length_m) if follower_1 else 999.0
-
-                urgency = (veh.position_m - self.merge_zone_start_m) / (self.merge_zone_end_m - self.merge_zone_start_m)
-                min_safe_decel = -3.8 - 3.2 * urgency
-                new_follower_acc = follower_1.compute_idm_acceleration(veh) if follower_1 else 0.0
-
-                if gap_ahead > veh.s0_m * 0.75 and gap_behind > (follower_1.s0_m * 0.75 if follower_1 else 2.0) and new_follower_acc >= min_safe_decel:
+                if self._can_merge_from_ramp(veh):
                     veh.lane_id = 1
                     self.lanes[1].append(veh)
                     self._sort_lanes()
@@ -161,29 +157,94 @@ class HighwaySimulator:
                 remaining_ramp.append(veh)
         self.lanes[2] = remaining_ramp
 
-        # 2. Discretionary MOBIL Lane Change: Right Mainline (Lane 1) -> Left Mainline (Lane 0)
-        remaining_l1 = []
-        for idx, veh in enumerate(self.lanes[1]):
-            curr_leader = self.lanes[1][idx - 1] if idx > 0 else None
-            acc_curr = veh.compute_idm_acceleration(curr_leader)
+    def _can_merge_from_ramp(self, veh: Vehicle) -> bool:
+        leader, follower = self._find_neighbors(1, veh.position_m)
+        gap_ahead = (
+            leader.position_m - veh.position_m - leader.length_m
+            if leader
+            else 999.0
+        )
+        gap_behind = (
+            veh.position_m - follower.position_m - veh.length_m
+            if follower
+            else 999.0
+        )
 
-            if acc_curr < -0.3 or veh.speed_mps < 0.85 * veh.v0_mps:
-                leader_0, follower_0 = self._find_neighbors(0, veh.position_m)
-                gap_ahead = (leader_0.position_m - veh.position_m - leader_0.length_m) if leader_0 else 999.0
-                gap_behind = (veh.position_m - follower_0.position_m - veh.length_m) if follower_0 else 999.0
+        merge_distance = self.merge_zone_end_m - self.merge_zone_start_m
+        urgency = (veh.position_m - self.merge_zone_start_m) / merge_distance
+        minimum_safe_deceleration = -3.8 - 3.2 * urgency
+        follower_acceleration = (
+            follower.compute_idm_acceleration(veh)
+            if follower
+            else 0.0
+        )
+        minimum_rear_gap = follower.s0_m * 0.75 if follower else 2.0
 
-                acc_new = veh.compute_idm_acceleration(leader_0)
-                f0_old_acc = follower_0.compute_idm_acceleration(leader_0) if follower_0 else 0.0
-                f0_new_acc = follower_0.compute_idm_acceleration(veh) if follower_0 else 0.0
+        return (
+            gap_ahead > veh.s0_m * 0.75
+            and gap_behind > minimum_rear_gap
+            and follower_acceleration >= minimum_safe_deceleration
+        )
 
-                incentive = (acc_new - acc_curr) + veh.politeness * (f0_new_acc - f0_old_acc)
-                if gap_ahead > veh.s0_m and gap_behind > (follower_0.s0_m if follower_0 else 2.5) and f0_new_acc > -3.0 and incentive > 0.35:
-                    veh.lane_id = 0
-                    self.lanes[0].append(veh)
-                    self._sort_lanes()
-                    continue
-            remaining_l1.append(veh)
-        self.lanes[1] = remaining_l1
+    def _process_discretionary_lane_changes(self) -> None:
+        """Apply MOBIL lane changes from lane 1 into lane 0."""
+        remaining_lane: List[Vehicle] = []
+        for index, veh in enumerate(self.lanes[1]):
+            current_leader = self.lanes[1][index - 1] if index > 0 else None
+            if self._should_change_to_left_lane(veh, current_leader):
+                veh.lane_id = 0
+                self.lanes[0].append(veh)
+                self._sort_lanes()
+            else:
+                remaining_lane.append(veh)
+        self.lanes[1] = remaining_lane
+
+    def _should_change_to_left_lane(
+        self,
+        veh: Vehicle,
+        current_leader: Optional[Vehicle],
+    ) -> bool:
+        current_acceleration = veh.compute_idm_acceleration(current_leader)
+        if current_acceleration >= -0.3 and veh.speed_mps >= 0.85 * veh.v0_mps:
+            return False
+
+        target_leader, target_follower = self._find_neighbors(0, veh.position_m)
+        gap_ahead = (
+            target_leader.position_m - veh.position_m - target_leader.length_m
+            if target_leader
+            else 999.0
+        )
+        gap_behind = (
+            veh.position_m - target_follower.position_m - veh.length_m
+            if target_follower
+            else 999.0
+        )
+
+        target_acceleration = veh.compute_idm_acceleration(target_leader)
+        follower_old_acceleration = (
+            target_follower.compute_idm_acceleration(target_leader)
+            if target_follower
+            else 0.0
+        )
+        follower_new_acceleration = (
+            target_follower.compute_idm_acceleration(veh)
+            if target_follower
+            else 0.0
+        )
+        incentive = (
+            target_acceleration
+            - current_acceleration
+            + veh.politeness
+            * (follower_new_acceleration - follower_old_acceleration)
+        )
+        minimum_rear_gap = target_follower.s0_m if target_follower else 2.5
+
+        return (
+            gap_ahead > veh.s0_m
+            and gap_behind > minimum_rear_gap
+            and follower_new_acceleration > -3.0
+            and incentive > 0.35
+        )
 
     def step(self, log_states: bool = False):
         """Advances simulation by dt_s. Set log_states=True when exporting trajectories."""
