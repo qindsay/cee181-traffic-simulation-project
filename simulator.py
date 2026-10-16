@@ -1,6 +1,7 @@
 from typing import List, Dict, Optional, Tuple
 import numpy as np
-from models import Vehicle, DriverVehicleFactory
+from constants import simulation_constants
+from vehicles import DriverVehicleFactory, Vehicle
 
 
 class VirtualDetector:
@@ -8,7 +9,13 @@ class VirtualDetector:
     Matches the CEE 181/281 Observation Exchange Format:
     sensor_id, interval_start_s, interval_end_s, count, mean_speed_mps, quality_flag
     """
-    def __init__(self, sensor_id: str, lane_id: int, position_m: float, sampling_interval_s: float = 10.0):
+    def __init__(
+        self,
+        sensor_id: str,
+        lane_id: int,
+        position_m: float,
+        sampling_interval_s: float = simulation_constants.DETECTOR_SAMPLING_INTERVAL_S,
+    ):
         self.sensor_id = sensor_id
         self.lane_id = lane_id
         self.position_m = position_m
@@ -49,31 +56,27 @@ class HighwaySimulator:
         self.factory = DriverVehicleFactory(seed=seed)
 
         # Highway & Ramp Geometry (meters)
-        self.length_m = 1000.0
-        self.ramp_start_m = 150.0
-        self.merge_zone_start_m = 350.0
-        self.merge_zone_end_m = 620.0
-        self.meter_stop_line_m = 310.0
+        self.length_m = simulation_constants.HIGHWAY_LENGTH_M
+        self.ramp_start_m = simulation_constants.RAMP_START_M
+        self.merge_zone_start_m = simulation_constants.MERGE_ZONE_START_M
+        self.merge_zone_end_m = simulation_constants.MERGE_ZONE_END_M
+        self.meter_stop_line_m = simulation_constants.METER_STOP_LINE_M
 
         # Active vehicles per lane (0: Left, 1: Right, 2: Ramp)
         self.lanes: Dict[int, List[Vehicle]] = {0: [], 1: [], 2: []}
         # Unmet boundary entry queues
         self.entry_queues: Dict[int, List[Vehicle]] = {0: [], 1: [], 2: []}
-        self.demand_vph = {0: 1450.0, 1: 1450.0, 2: 600.0}
+        self.demand_vph = simulation_constants.DEMAND_VPH.copy()
 
         # Ramp Metering Control
         self.ramp_meter_enabled = False
-        self.meter_rate_vph = 450.0
+        self.meter_rate_vph = simulation_constants.RAMP_METER_RATE_VPH
         self.last_release_time_s = -999.0
         self.meter_is_green = True
 
         self.detectors = [
-            VirtualDetector("DET_UP_L0", lane_id=0, position_m=220.0),
-            VirtualDetector("DET_UP_L1", lane_id=1, position_m=220.0),
-            VirtualDetector("DET_MERGE_L0", lane_id=0, position_m=550.0),
-            VirtualDetector("DET_MERGE_L1", lane_id=1, position_m=550.0),
-            VirtualDetector("DET_DOWN_L0", lane_id=0, position_m=850.0),
-            VirtualDetector("DET_DOWN_L1", lane_id=1, position_m=850.0),
+            VirtualDetector(sensor_id, lane_id, position_m)
+            for sensor_id, lane_id, position_m in simulation_constants.DETECTORS
         ]
 
         # Standard Exchange Logs
@@ -86,13 +89,13 @@ class HighwaySimulator:
             self.lanes[lane_id].sort(key=lambda v: v.position_m, reverse=True)
 
     def trigger_lead_disturbance(self) -> Optional[int]:
-        """Forces a downstream vehicle in Lane 1 to brake for 3.5 seconds."""
+        """Forces a downstream vehicle in Lane 1 to brake temporarily."""
         candidates = [v for v in self.lanes[1] if 500.0 <= v.position_m <= 800.0]
         if not candidates and self.lanes[1]:
             candidates = [self.lanes[1][0]]
         if candidates:
             target = candidates[0]
-            target.forced_brake_timer_s = 3.5
+            target.forced_brake_timer_s = simulation_constants.LEAD_DISTURBANCE_DURATION_S
             return target.vehicle_id
         return None
 
@@ -101,7 +104,11 @@ class HighwaySimulator:
             prob_arrival = (vph / 3600.0) * self.dt_s
             if self.rng.random() < prob_arrival:
                 spawn_pos = self.ramp_start_m if lane_id == 2 else 0.0
-                init_speed = 20.0 if lane_id == 2 else 27.0
+                init_speed = (
+                    simulation_constants.RAMP_INITIAL_SPEED_MPS
+                    if lane_id == 2
+                    else simulation_constants.MAINLINE_INITIAL_SPEED_MPS
+                )
                 self.entry_queues[lane_id].append(
                     self.factory.create_vehicle(lane_id, spawn_pos, init_speed)
                 )
