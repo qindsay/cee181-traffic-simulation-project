@@ -69,6 +69,7 @@ class Vehicle:
             0.0,
             self.speed_mps * self.T_s + (self.speed_mps * dv) / (2.0 * np.sqrt(self.a_mps2 * self.b_mps2))
         )
+        #The max(0, …) keeps s* from dropping below s0 when the car ahead pulls away quickly (negative dv).
         interaction_term = (s_star / s) ** 2
         acc = self.a_mps2 * (1.0 - free_road_term - interaction_term)
         return float(
