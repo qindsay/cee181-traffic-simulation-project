@@ -9,6 +9,7 @@ from constants import render_constants, simulation_constants
 from models import StatParam
 from simulator import HighwaySimulator
 from vehicles import Vehicle
+import traffic_analysis
 
 
 def speed_to_color(speed_mps: float) -> Tuple[int, int, int]:
@@ -71,6 +72,10 @@ class Simulation:
         self.hist_l0_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_l1_speed = deque(maxlen=render_constants.MAX_PTS)
         self.hist_queue = deque(maxlen=render_constants.MAX_PTS)
+
+        # Records trajectories/crossings for the traffic-theory plots ([P] key)
+        self.recorder = traffic_analysis.TrafficRecorder()
+        self.status_message = ""
 
     def window_to_canvas_position(
         self, position: Tuple[int, int]
@@ -393,11 +398,11 @@ class Simulation:
         )
 
         controls = (
-            f"[SPACE] {'Resume' if self.paused else 'Pause'}   |   "
-            f"[M] Ramp Meter: {'ON (450 vph)' if self.sim.ramp_meter_enabled else 'OFF'}   |   "
-            "[B] Trigger Lead Braking Disturbance   |   "
-            f"[UP/DOWN] Speed: {self.sim_speed_mult}x   |   "
-            "[R] Reset   |   [Click Car] Inspect"
+            f"[SPACE] {'Resume' if self.paused else 'Pause'}  |  "
+            f"[M] Ramp Meter: {'ON (450 vph)' if self.sim.ramp_meter_enabled else 'OFF'}  |  "
+            "[B] Braking Disturbance  |  "
+            f"[UP/DOWN] Speed: {self.sim_speed_mult}x  |  "
+            "[R] Reset  |  [P] Export Plots  |  [Click Car] Inspect"
         )
         self.screen.blit(
             self.font_ui.render(controls, True, (180, 210, 255)),
@@ -417,6 +422,11 @@ class Simulation:
             self.font_ui.render(stats, True, (220, 220, 220)),
             (20, 68),
         )
+        if self.status_message:
+            self.screen.blit(
+                self.font_small.render(self.status_message, True, (120, 230, 140)),
+                (20, 100),
+            )
 
     def render_ramp_meter(self) -> None:
         """Draw the ramp meter stop line and signal."""
@@ -571,6 +581,8 @@ class Simulation:
         self.hist_l1_speed.clear()
         self.hist_queue.clear()
         self.selected_veh = None
+        self.recorder = traffic_analysis.TrafficRecorder()
+        self.status_message = ""
 
     def handle_keydown(self, key: int) -> None:
         if key == pygame.K_SPACE:
@@ -578,7 +590,10 @@ class Simulation:
         elif key == pygame.K_m:
             self.sim.ramp_meter_enabled = not self.sim.ramp_meter_enabled
         elif key == pygame.K_b:
-            self.sim.trigger_lead_disturbance()
+            # same as before, but also remembered for the plots
+            traffic_analysis.trigger_disturbance(self.sim, self.recorder)
+        elif key == pygame.K_p:
+            self.export_plots()
         elif key == pygame.K_UP:
             self.sim_speed_mult = min(
                 render_constants.MAX_SIM_SPEED_MULTIPLIER,
@@ -591,6 +606,18 @@ class Simulation:
             )
         elif key == pygame.K_r:
             self.reset()
+
+    def export_plots(self) -> None:
+        """[P]: save CSV data + traffic-theory plots for everything simulated so far."""
+        if self.sim.time_s < traffic_analysis.WARMUP_S + 60:
+            self.status_message = (f"Run at least {traffic_analysis.WARMUP_S + 60:.0f} s of "
+                                   "simulated time before exporting plots.")
+            return
+        self.status_message = "Exporting data and plots (the window pauses a few seconds)..."
+        self.render()
+        out = traffic_analysis.export(self.sim, self.recorder)
+        self.status_message = f"Saved data + plots to {out}"
+        print(f"Saved data + plots to {out}")
 
     def find_vehicle_at(self, position: Tuple[int, int]) -> Optional[Vehicle]:
         mouse_x, mouse_y = position
@@ -643,6 +670,7 @@ class Simulation:
             if not self.paused:
                 for _ in range(self.sim_speed_mult):
                     self.sim.step()
+                    self.recorder.record(self.sim)
                 self.update_telemetry()
 
             self.render()

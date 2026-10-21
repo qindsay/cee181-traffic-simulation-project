@@ -5,6 +5,17 @@ IDM_DELTA = 4.0
 FORCED_BRAKE_ACCELERATION_MPS2 = -4.5
 MIN_IDM_ACCELERATION_MPS2 = -9.0
 
+# Safety limits for lane changes and merges: nobody (the mover or the new
+# follower) may be forced to brake harder than this. Merges near the taper end
+# accept up to MERGE_SAFE_DECEL_END_MPS2 (urgency).
+SAFE_DECEL_MPS2 = 4.0
+MERGE_SAFE_DECEL_END_MPS2 = 6.0
+
+# Lane changes / merges are decided on a fixed clock instead of every time step,
+# so results do not change when the time step changes.
+LANE_CHANGE_DECISION_INTERVAL_S = 1.0
+MERGE_DECISION_INTERVAL_S = 0.2
+
 VEHICLE_DISTRIBUTION_PARAMETERS = {
     "car": {
         "length_m": (4.5, 0.3, 3.8, 5.5),

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 from typing import Optional
 import numpy as np
 
@@ -18,7 +19,7 @@ class StatParam:
 
     @staticmethod
     def z_to_percentile(z: float) -> float:
-        """Approximates normal CDF percentile (0-100) from Z-score."""
-        return float(0.5 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (z + 0.044715 * z**3))) * 100.0)
+        """Exact standard-normal CDF percentile (0-100) from a Z-score."""
+        return 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 

@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional, Tuple
 import numpy as np
-from constants import simulation_constants
+from constants import simulation_constants, vehicle_constants
 from vehicles import DriverVehicleFactory, Vehicle
 
 
@@ -52,7 +52,13 @@ class HighwaySimulator:
     def __init__(self, dt_s: float = 0.1, seed: int = 42):
         self.dt_s = dt_s
         self.time_s = 0.0
-        self.rng = np.random.default_rng(seed)
+        self.step_count = 0  # FIX: time = step_count * dt (no floating-point drift)
+        # FIX: independent random streams (before, arrivals and vehicle parameters
+        # both used default_rng(seed) and drew the SAME numbers). One stream per
+        # lane for arrival times and one per lane for vehicle parameters.
+        arrival_ss, vehicle_ss = np.random.SeedSequence(seed).spawn(2)
+        self.arrival_rngs = {lane: np.random.default_rng(s) for lane, s in zip((0, 1, 2), arrival_ss.spawn(3))}
+        self.vehicle_rngs = {lane: np.random.default_rng(s) for lane, s in zip((0, 1, 2), vehicle_ss.spawn(3))}
         self.factory = DriverVehicleFactory(seed=seed)
 
         # Highway & Ramp Geometry (meters)
@@ -67,6 +73,9 @@ class HighwaySimulator:
         # Unmet boundary entry queues
         self.entry_queues: Dict[int, List[Vehicle]] = {0: [], 1: [], 2: []}
         self.demand_vph = simulation_constants.DEMAND_VPH.copy()
+        # FIX: arrival times are drawn as exponential headways (Poisson arrivals)
+        # in continuous time, so they are the same whatever the time step.
+        self.next_arrival_s = {lane: self._next_headway_s(lane) for lane in self.demand_vph}
 
         # Ramp Metering Control
         self.ramp_meter_enabled = False
@@ -99,10 +108,22 @@ class HighwaySimulator:
             return target.vehicle_id
         return None
 
+    def _next_headway_s(self, lane_id: int) -> float:
+        vph = self.demand_vph.get(lane_id, 0.0)
+        if vph <= 0.0:
+            return float("inf")
+        return float(self.arrival_rngs[lane_id].exponential(3600.0 / vph))
+
+    def _on_clock(self, period_s: float) -> bool:
+        """True when the current time is a multiple of period_s."""
+        ratio = self.time_s / period_s
+        return abs(ratio - round(ratio)) < 1e-6
+
     def _spawn_and_discharge_queues(self):
         for lane_id, vph in self.demand_vph.items():
-            prob_arrival = (vph / 3600.0) * self.dt_s
-            if self.rng.random() < prob_arrival:
+            if self.next_arrival_s[lane_id] == float("inf") and vph > 0.0:
+                self.next_arrival_s[lane_id] = self.time_s + self._next_headway_s(lane_id)
+            while self.next_arrival_s[lane_id] <= self.time_s + 1e-9:
                 spawn_pos = self.ramp_start_m if lane_id == 2 else 0.0
                 init_speed = (
                     simulation_constants.RAMP_INITIAL_SPEED_MPS
@@ -110,8 +131,9 @@ class HighwaySimulator:
                     else simulation_constants.MAINLINE_INITIAL_SPEED_MPS
                 )
                 self.entry_queues[lane_id].append(
-                    self.factory.create_vehicle(lane_id, spawn_pos, init_speed)
+                    self.factory.create_vehicle(lane_id, spawn_pos, init_speed, rng=self.vehicle_rngs[lane_id])
                 )
+                self.next_arrival_s[lane_id] += self._next_headway_s(lane_id)
 
             if self.entry_queues[lane_id]:
                 cand_veh = self.entry_queues[lane_id][0]
@@ -137,10 +159,17 @@ class HighwaySimulator:
         return leader, follower
 
     def _process_merging_and_lane_changes(self) -> None:
-        """Apply mandatory ramp merges, then discretionary lane changes."""
+        """Apply mandatory ramp merges, then discretionary lane changes.
+
+        FIX: decisions run on a fixed clock (merges every 0.2 s, lane changes
+        every 1 s) instead of every step, so a smaller dt no longer means more
+        lane changes. Use a dt that divides 0.2 s (0.05, 0.1 or 0.2).
+        """
         self._sort_lanes()
-        self._process_ramp_merges()
-        self._process_discretionary_lane_changes()
+        if self._on_clock(vehicle_constants.MERGE_DECISION_INTERVAL_S):
+            self._process_ramp_merges()
+        if self._on_clock(vehicle_constants.LANE_CHANGE_DECISION_INTERVAL_S):
+            self._process_discretionary_lane_changes()
 
     def _process_ramp_merges(self) -> None:
         """Move ramp vehicles into lane 1 when a safe merge gap is available."""
@@ -172,18 +201,27 @@ class HighwaySimulator:
 
         merge_distance = self.merge_zone_end_m - self.merge_zone_start_m
         urgency = (veh.position_m - self.merge_zone_start_m) / merge_distance
-        minimum_safe_deceleration = -3.8 - 3.2 * urgency
+        # Drivers accept harder braking the closer they are to the taper end.
+        minimum_safe_deceleration = -(
+            vehicle_constants.SAFE_DECEL_MPS2
+            + (vehicle_constants.MERGE_SAFE_DECEL_END_MPS2 - vehicle_constants.SAFE_DECEL_MPS2) * urgency
+        )
         follower_acceleration = (
             follower.compute_idm_acceleration(veh)
             if follower
             else 0.0
         )
-        minimum_rear_gap = follower.s0_m * 0.75 if follower else 2.0
+        # FIX: the merging vehicle must also be able to follow its NEW leader.
+        # Before, only the follower was checked, so fast ramp vehicles merged a
+        # metre behind slow mainline cars and drove through them.
+        own_acceleration = veh.compute_idm_acceleration(leader)
+        minimum_rear_gap = follower.s0_m if follower else 2.0
 
         return (
-            gap_ahead > veh.s0_m * 0.75
+            gap_ahead > veh.s0_m
             and gap_behind > minimum_rear_gap
             and follower_acceleration >= minimum_safe_deceleration
+            and own_acceleration >= minimum_safe_deceleration
         )
 
     def _process_discretionary_lane_changes(self) -> None:
@@ -243,6 +281,8 @@ class HighwaySimulator:
             gap_ahead > veh.s0_m
             and gap_behind > minimum_rear_gap
             and follower_new_acceleration > -3.0
+            # FIX: the lane changer itself must not need to brake hard
+            and target_acceleration > -vehicle_constants.SAFE_DECEL_MPS2
             and incentive > 0.35
         )
 
@@ -264,29 +304,57 @@ class HighwaySimulator:
                 max_gap = None
 
                 if lane_id == 2:
-                    if self.ramp_meter_enabled and veh.position_m <= self.meter_stop_line_m:
+                    obstacles = [max(0.01, self.merge_zone_end_m - veh.position_m)]  # taper end
+                    if (self.ramp_meter_enabled and veh.position_m <= self.meter_stop_line_m
+                            and not veh.meter_released):
                         is_first_at_meter = (leader is None or leader.position_m > self.meter_stop_line_m)
-                        if self.meter_is_green and is_first_at_meter and (self.meter_stop_line_m - veh.position_m) < 6.0:
+                        dist_to_line = self.meter_stop_line_m - veh.position_m
+                        if self.meter_is_green and is_first_at_meter and dist_to_line < 6.0:
+                            # FIX: remember the release; before, the car was stopped
+                            # again on the next (red) step and released a second time.
+                            veh.meter_released = True
                             self.last_release_time_s = self.time_s
                             self.meter_is_green = False
                         elif not self.meter_is_green and is_first_at_meter:
-                            max_gap = max(0.01, self.meter_stop_line_m - veh.position_m)
-
-                    if max_gap is None:
-                        dist_to_taper_end = self.merge_zone_end_m - veh.position_m
-                        if leader is None or (leader.position_m - veh.position_m - leader.length_m) > dist_to_taper_end:
-                            max_gap = max(0.01, dist_to_taper_end)
+                            if veh.speed_mps ** 2 / (2.0 * max(dist_to_line, 0.1)) > -vehicle_constants.MIN_IDM_ACCELERATION_MPS2:
+                                # physically cannot stop before the line: goes through (like an amber light)
+                                veh.meter_released = True
+                                self.last_release_time_s = self.time_s
+                            else:
+                                obstacles.append(max(0.01, dist_to_line))
+                    max_gap = min(obstacles)
 
                 veh.acceleration_mps2 = veh.compute_idm_acceleration(leader, max_gap_m=max_gap)
+
+                if lane_id == 2 and veh.position_m >= self.merge_zone_start_m:
+                    # FIX: in the merge zone a ramp driver also adjusts to the
+                    # mainline car just ahead (at most comfortable braking b), so
+                    # it drifts back into a gap instead of driving alongside
+                    # mainline traffic until it is stuck at the taper end.
+                    main_leader, _ = self._find_neighbors(1, veh.position_m)
+                    if main_leader is not None:
+                        veh.acceleration_mps2 = min(
+                            veh.acceleration_mps2,
+                            max(veh.compute_idm_acceleration(main_leader), -veh.b_mps2),
+                        )
 
         for lane_id in [0, 1, 2]:
             surviving = []
             for veh in self.lanes[lane_id]:
                 prev_pos = veh.position_m
-                new_speed = max(0.0, veh.speed_mps + veh.acceleration_mps2 * self.dt_s)
-                dx = max(0.0, 0.5 * (veh.speed_mps + new_speed) * self.dt_s)
+                # FIX: exact stop inside the step, and store the acceleration that
+                # was actually APPLIED. Before, a car standing at the meter kept
+                # reporting -9 m/s^2, which corrupts any braking statistic.
+                v_old, acc = veh.speed_mps, veh.acceleration_mps2
+                new_speed = v_old + acc * self.dt_s
+                if new_speed >= 0.0:
+                    dx = v_old * self.dt_s + 0.5 * acc * self.dt_s ** 2
+                else:
+                    dx = -v_old ** 2 / (2.0 * acc) if acc < 0.0 else 0.0
+                    new_speed = 0.0
                 veh.position_m += dx
                 veh.speed_mps = new_speed
+                veh.acceleration_mps2 = (new_speed - v_old) / self.dt_s
 
                 veh.visual_lane += (float(veh.lane_id) - veh.visual_lane) * min(1.0, self.dt_s * 6.0)
 
@@ -296,7 +364,8 @@ class HighwaySimulator:
 
                 if log_states:
                     self.vehicle_state_log.append({
-                        "time_s": round(self.time_s, 2),
+                        # FIX: the state is AFTER the step, so stamp it with that time
+                        "time_s": round(self.time_s + self.dt_s, 2),
                         "vehicle_id": veh.vehicle_id,
                         "lane_id": veh.lane_id,
                         "position_m": round(veh.position_m, 2),
@@ -310,7 +379,8 @@ class HighwaySimulator:
                     self.total_exited_vehicles += 1
             self.lanes[lane_id] = surviving
 
-        self.time_s += self.dt_s
+        self.step_count += 1
+        self.time_s = self.step_count * self.dt_s
         for det in self.detectors:
             obs = det.step_interval(self.time_s)
             if obs is not None:
