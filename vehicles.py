@@ -47,6 +47,10 @@ class Vehicle:
 
     def _idm_single(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float]) -> float:
         """IDM against one leader, one stationary obstacle, or a free road."""
+        """ acceleration = a · [ 1 − (v / v0)^δ − (s* / s)² ]
+
+            s* = s0 + max(0, v·T + v·Δv / (2·√(a·b)))   ← desired gap"""
+        
         free_road_term = (self.speed_mps / self.v0_mps) ** self.delta
 
         if lead_veh is None and max_gap_m is None:
@@ -60,7 +64,7 @@ class Vehicle:
             s = max_gap_m
             dv = self.speed_mps
 
-        s = max(s, 0.01)  # Guard against division by zero
+        s = max(s, 0.01)  # Guard against division by zero if gap is ever 0
         s_star = self.s0_m + max(
             0.0,
             self.speed_mps * self.T_s + (self.speed_mps * dv) / (2.0 * np.sqrt(self.a_mps2 * self.b_mps2))
