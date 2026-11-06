@@ -161,7 +161,7 @@ class Simulation:
         self.screen.blit(merge_surf, (ramp_x2, render_constants.LANE_Y[1]))
         self.screen.blit(
             self.font_small.render(
-                "ACCELERATION & MERGE ZONE (350m - 620m)",
+                f"ACCELERATION & MERGE ZONE ({simulation_constants.MERGE_ZONE_START_M}m - {simulation_constants.MERGE_ZONE_END_M}m)",
                 True,
                 (255, 190, 90),
             ),
