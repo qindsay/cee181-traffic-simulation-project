@@ -5,11 +5,11 @@ from typing import Optional, Tuple
 import numpy as np
 import pygame
 
-from constants import render_constants, simulation_constants
+from constants import analysis_constants, render_constants, simulation_constants
 from models import StatParam
 from simulator import HighwaySimulator
 from vehicles import Vehicle
-import traffic_analysis
+from analysis import analyze_traffic, traffic_analysis_main
 
 
 def speed_to_color(speed_mps: float) -> Tuple[int, int, int]:
@@ -74,7 +74,7 @@ class Simulation:
         self.hist_queue = deque(maxlen=render_constants.MAX_PTS)
 
         # Records trajectories/crossings for the traffic-theory plots ([P] key)
-        self.recorder = traffic_analysis.TrafficRecorder()
+        self.recorder = analyze_traffic.TrafficRecorder()
         self.status_message = ""
 
     def window_to_canvas_position(
@@ -581,7 +581,7 @@ class Simulation:
         self.hist_l1_speed.clear()
         self.hist_queue.clear()
         self.selected_veh = None
-        self.recorder = traffic_analysis.TrafficRecorder()
+        self.recorder = analyze_traffic.TrafficRecorder()
         self.status_message = ""
 
     def handle_keydown(self, key: int) -> None:
@@ -591,7 +591,7 @@ class Simulation:
             self.sim.ramp_meter_enabled = not self.sim.ramp_meter_enabled
         elif key == pygame.K_b:
             # same as before, but also remembered for the plots
-            traffic_analysis.trigger_disturbance(self.sim, self.recorder)
+            analyze_traffic.trigger_disturbance(self.sim, self.recorder)
         elif key == pygame.K_p:
             self.export_plots()
         elif key == pygame.K_UP:
@@ -609,13 +609,13 @@ class Simulation:
 
     def export_plots(self) -> None:
         """[P]: save CSV data + traffic-theory plots for everything simulated so far."""
-        if self.sim.time_s < traffic_analysis.WARMUP_S + 60:
-            self.status_message = (f"Run at least {traffic_analysis.WARMUP_S + 60:.0f} s of "
+        if self.sim.time_s < analysis_constants.WARMUP_S + 60:
+            self.status_message = (f"Run at least {analysis_constants.WARMUP_S + 60:.0f} s of "
                                    "simulated time before exporting plots.")
             return
         self.status_message = "Exporting data and plots (the window pauses a few seconds)..."
         self.render()
-        out = traffic_analysis.export(self.sim, self.recorder)
+        out = traffic_analysis_main.export(self.sim, self.recorder)
         self.status_message = f"Saved data + plots to {out}"
         print(f"Saved data + plots to {out}")
 
