@@ -8,19 +8,19 @@ pip3 install -r requirements.txt
 
 Then, in your project directory terminal, run
 ```
-python3 main_pygame.py
+python3 pygame_main.py
 ```
 
 Keys: `SPACE` pause, `M` ramp meter on/off, `B` lead-vehicle braking disturbance,
 `UP/DOWN` speed, `R` reset, `P` export data + traffic-theory plots, click a car to inspect it.
 
-## Traffic-theory plots and data (`traffic_analysis.py`)
+## Traffic-theory plots and data (`analysis/`)
 
 Press `P` in the window (after at least 3 simulated minutes), or run without a window:
 
 ```
-python3 traffic_analysis.py --minutes 20
-python3 traffic_analysis.py --minutes 20 --meter --disturbance 400 800
+python3 -m analysis.traffic_analysis_main --minutes 20
+python3 -m analysis.traffic_analysis_main --minutes 20 --meter --disturbance 400 800
 ```
 
 Everything goes to `output/run_<date_time>/`:
