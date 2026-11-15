@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional, Tuple
 import numpy as np
 from constants import simulation_constants, vehicle_constants
-from vehicles import DriverVehicleFactory, Vehicle
+from vehicles import CAVVehicle, DriverVehicleFactory, Vehicle
 
 
 class VirtualDetector:
@@ -49,16 +49,22 @@ class VirtualDetector:
 
 class HighwaySimulator:
     """Manages the 2 mainline lanes + 1 merging ramp, queues, detectors, and step logic."""
-    def __init__(self, dt_s: float = 0.1, seed: int = 42):
+    def __init__(self, dt_s: float = 0.1, seed: int = 42,
+                 cav_penetration: float = simulation_constants.CAV_PENETRATION):
         self.dt_s = dt_s
         self.time_s = 0.0
         self.step_count = 0  # FIX: time = step_count * dt (no floating-point drift)
         # FIX: independent random streams (before, arrivals and vehicle parameters
         # both used default_rng(seed) and drew the SAME numbers). One stream per
         # lane for arrival times and one per lane for vehicle parameters.
-        arrival_ss, vehicle_ss = np.random.SeedSequence(seed).spawn(2)
+        # A third stream decides which arrivals are CAVs. SeedSequence children
+        # are indexed, so the first two streams are unchanged by adding it, and
+        # the human drivers are the same at every penetration rate.
+        arrival_ss, vehicle_ss, cav_ss = np.random.SeedSequence(seed).spawn(3)
         self.arrival_rngs = {lane: np.random.default_rng(s) for lane, s in zip((0, 1, 2), arrival_ss.spawn(3))}
         self.vehicle_rngs = {lane: np.random.default_rng(s) for lane, s in zip((0, 1, 2), vehicle_ss.spawn(3))}
+        self.cav_rngs = {lane: np.random.default_rng(s) for lane, s in zip((0, 1, 2), cav_ss.spawn(3))}
+        self.cav_penetration = cav_penetration
         self.factory = DriverVehicleFactory(seed=seed)
 
         # Highway & Ramp Geometry (meters)
@@ -130,8 +136,10 @@ class HighwaySimulator:
                     if lane_id == 2
                     else simulation_constants.MAINLINE_INITIAL_SPEED_MPS
                 )
+                is_cav = bool(self.cav_rngs[lane_id].random() < self.cav_penetration)
                 self.entry_queues[lane_id].append(
-                    self.factory.create_vehicle(lane_id, spawn_pos, init_speed, rng=self.vehicle_rngs[lane_id])
+                    self.factory.create_vehicle(lane_id, spawn_pos, init_speed,
+                                                rng=self.vehicle_rngs[lane_id], is_cav=is_cav)
                 )
                 self.next_arrival_s[lane_id] += self._next_headway_s(lane_id)
 
@@ -207,14 +215,14 @@ class HighwaySimulator:
             + (vehicle_constants.MERGE_SAFE_DECEL_END_MPS2 - vehicle_constants.SAFE_DECEL_MPS2) * urgency
         )
         follower_acceleration = (
-            follower.compute_idm_acceleration(veh)
+            follower.compute_acceleration(veh)
             if follower
             else 0.0
         )
         # FIX: the merging vehicle must also be able to follow its NEW leader.
         # Before, only the follower was checked, so fast ramp vehicles merged a
         # metre behind slow mainline cars and drove through them.
-        own_acceleration = veh.compute_idm_acceleration(leader)
+        own_acceleration = veh.compute_acceleration(leader)
         minimum_rear_gap = follower.s0_m if follower else 2.0
 
         return (
@@ -242,7 +250,7 @@ class HighwaySimulator:
         veh: Vehicle,
         current_leader: Optional[Vehicle],
     ) -> bool:
-        current_acceleration = veh.compute_idm_acceleration(current_leader)
+        current_acceleration = veh.compute_acceleration(current_leader)
         if current_acceleration >= -0.3 and veh.speed_mps >= 0.85 * veh.v0_mps:
             return False
 
@@ -258,14 +266,14 @@ class HighwaySimulator:
             else 999.0
         )
 
-        target_acceleration = veh.compute_idm_acceleration(target_leader)
+        target_acceleration = veh.compute_acceleration(target_leader)
         follower_old_acceleration = (
-            target_follower.compute_idm_acceleration(target_leader)
+            target_follower.compute_acceleration(target_leader)
             if target_follower
             else 0.0
         )
         follower_new_acceleration = (
-            target_follower.compute_idm_acceleration(veh)
+            target_follower.compute_acceleration(veh)
             if target_follower
             else 0.0
         )
@@ -324,7 +332,7 @@ class HighwaySimulator:
                                 obstacles.append(max(0.01, dist_to_line))
                     max_gap = min(obstacles)
 
-                veh.acceleration_mps2 = veh.compute_idm_acceleration(leader, max_gap_m=max_gap)
+                veh.acceleration_mps2 = veh.compute_acceleration(leader, max_gap_m=max_gap)
 
                 if lane_id == 2 and veh.position_m >= self.merge_zone_start_m:
                     # FIX: in the merge zone a ramp driver also adjusts to the
@@ -335,8 +343,16 @@ class HighwaySimulator:
                     if main_leader is not None:
                         veh.acceleration_mps2 = min(
                             veh.acceleration_mps2,
-                            max(veh.compute_idm_acceleration(main_leader), -veh.b_mps2),
+                            max(veh.compute_acceleration(main_leader), -veh.b_mps2),
                         )
+                # Only update every ACC_UPDATE_INTERVAL_S since real CAVs update at fixed intervals
+                if isinstance(veh, CAVVehicle):
+                    # Controller runs every ACC_UPDATE_INTERVAL_S and holds its
+                    # command in between (no-op when dt equals the interval).
+                    if self.time_s >= veh.next_acc_update_s - 1e-9:
+                        veh.acc_command_mps2 = veh.acceleration_mps2
+                        veh.next_acc_update_s = self.time_s + vehicle_constants.ACC_UPDATE_INTERVAL_S
+                    veh.acceleration_mps2 = veh.acc_command_mps2
 
         for lane_id in [0, 1, 2]:
             surviving = []

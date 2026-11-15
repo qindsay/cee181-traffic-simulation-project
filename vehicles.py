@@ -28,7 +28,7 @@ class Vehicle:
     forced_brake_timer_s: float = 0.0  # Used for interactive disturbance testing
     meter_released: bool = False       # FIX: got its green at the ramp meter
 
-    def compute_idm_acceleration(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float] = None) -> float:
+    def compute_acceleration(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float] = None) -> float:
         """Calculates longitudinal acceleration using the Intelligent Driver Model (IDM).
 
         FIX: when there is both a leader and a fixed obstacle (red meter, taper
@@ -77,6 +77,54 @@ class Vehicle:
         )
 
 
+@dataclass
+class CAVVehicle(Vehicle):
+    """Automated vehicle: linear ACC (constant time-gap) law + IDM safety fallback.
+
+        a_ACC = k1 · (gap − s0 − t_hw · v) + k2 · (v_lead − v)
+
+    * Inputs are only the current gap to the vehicle ahead and its current
+      speed (what an on-board radar would measure) — no future positions.
+    * a_ACC is clipped to [ACC_MIN_ACCEL, ACC_MAX_ACCEL] (about −4 / +2 m/s²).
+    * Safety fallback: if IDM is in its emergency regime (it wants to brake
+      harder than its comfortable deceleration b) and that is stronger than
+      the ACC command, the IDM braking is used instead — this may exceed −4.
+    * The simulator holds the command for ACC_UPDATE_INTERVAL_S between updates.
+    """
+    k1: float = vehicle_constants.ACC_K1
+    k2: float = vehicle_constants.ACC_K2
+    t_hw_s: float = vehicle_constants.ACC_TIME_HEADWAY_S
+    k_speed: float = vehicle_constants.ACC_K_SPEED
+    acc_command_mps2: float = 0.0       # last controller output (zero-order hold)
+    next_acc_update_s: float = 0.0      # sim time of the next controller update
+
+    def _acc_law(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float]) -> float:
+        # Cruise mode: speed control toward the set speed v0 (the ACC law has no
+        # free-road term, so a lone CAV would otherwise never accelerate).
+        cruise_acc = self.k_speed * (self.v0_mps - self.speed_mps)
+        if lead_veh is None and max_gap_m is None:
+            acc = cruise_acc
+        else:
+            if lead_veh is not None:
+                gap = lead_veh.position_m - self.position_m - lead_veh.length_m
+                lead_speed = lead_veh.speed_mps
+            else:
+                gap = max_gap_m     # fixed obstacle (red meter / taper end) = stopped leader
+                lead_speed = 0.0
+            spacing_error = gap - self.s0_m - self.t_hw_s * self.speed_mps
+            acc = min(cruise_acc, self.k1 * spacing_error + self.k2 * (lead_speed - self.speed_mps))
+        return float(np.clip(acc, vehicle_constants.ACC_MIN_ACCEL_MPS2, vehicle_constants.ACC_MAX_ACCEL_MPS2))
+
+    def _idm_single(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float]) -> float:
+        acc_cmd = self._acc_law(lead_veh, max_gap_m)
+        if lead_veh is None and max_gap_m is None:
+            return acc_cmd
+        idm_acc = Vehicle._idm_single(self, lead_veh, max_gap_m)
+        if idm_acc < -self.b_mps2 and idm_acc < acc_cmd:
+            return idm_acc          # safety fallback: emergency IDM braking
+        return acc_cmd
+
+
 class DriverVehicleFactory:
     """Generates heterogeneous vehicles using empirical distributions and Z-scores."""
     def __init__(self, seed: int = 42, rng: Optional[np.random.Generator] = None):
@@ -94,7 +142,7 @@ class DriverVehicleFactory:
         self.veh_probs = vehicle_constants.VEHICLE_TYPE_PROBABILITIES
 
     def create_vehicle(self, lane_id: int, position_m: float, initial_speed_mps: float,
-                       rng: Optional[np.random.Generator] = None) -> Vehicle:
+                       rng: Optional[np.random.Generator] = None, is_cav: bool = False) -> Vehicle:
         # FIX: the simulator passes one random stream per lane, so a vehicle's
         # parameters do not depend on what happened in the other lanes.
         rng = rng if rng is not None else self.rng
@@ -108,13 +156,7 @@ class DriverVehicleFactory:
             )
         )
 
-        veh = Vehicle(
-            vehicle_id=self.next_id,
-            veh_type=v_type,
-            lane_id=lane_id,
-            visual_lane=float(lane_id),
-            position_m=position_m,
-            speed_mps=initial_speed_mps,
+        params = dict(
             length_m=dist["length_m"].sample(rng),
             v0_mps=dist["v0_mps"].sample(rng, z_override=driver_z),
             T_s=dist["T_s"].sample(rng, z_override=-driver_z),
@@ -122,7 +164,25 @@ class DriverVehicleFactory:
             b_mps2=dist["b_mps2"].sample(rng),
             s0_m=dist["s0_m"].sample(rng, z_override=-0.5 * driver_z),
             politeness=dist["politeness"].sample(rng, z_override=-driver_z),
-            driver_z_score=driver_z
+        )
+        # The same random numbers are drawn either way, so the human drivers in
+        # the stream are identical whatever the CAV penetration is.
+        if is_cav:
+            # Automated driving is not randomized: use the mean parameters
+            # (vehicle length is physical, so it stays sampled).
+            for name in ("v0_mps", "T_s", "a_mps2", "b_mps2", "s0_m", "politeness"):
+                params[name] = dist[name].mean
+            driver_z = 0.0
+
+        veh = (CAVVehicle if is_cav else Vehicle)(
+            vehicle_id=self.next_id,
+            veh_type=v_type,
+            lane_id=lane_id,
+            visual_lane=float(lane_id),
+            position_m=position_m,
+            speed_mps=initial_speed_mps,
+            driver_z_score=driver_z,
+            **params,
         )
         self.next_id += 1
         return veh

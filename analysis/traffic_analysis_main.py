@@ -98,12 +98,14 @@ def main():
     ap.add_argument("--seed", type=int, default=simulation_constants.RANDOM_SEED)
     ap.add_argument("--dt", type=float, default=simulation_constants.TIME_STEP_S)
     ap.add_argument("--meter", action="store_true", help="turn the ramp meter on")
+    ap.add_argument("--cav", type=float, default=simulation_constants.CAV_PENETRATION,
+                    help="share of arriving vehicles that are automated (0-1)")
     ap.add_argument("--disturbance", type=float, nargs="*", default=[],
                     help="times (s) when a lane-1 vehicle brakes hard, like pressing [B]")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    sim = HighwaySimulator(dt_s=args.dt, seed=args.seed)
+    sim = HighwaySimulator(dt_s=args.dt, seed=args.seed, cav_penetration=args.cav)
     sim.ramp_meter_enabled = args.meter
     rec = analyze_traffic.TrafficRecorder()
     pending_disturbances = sorted(args.disturbance)

@@ -9,6 +9,7 @@ METER_STOP_LINE_M = MERGE_ZONE_START_M
 
 DEMAND_VPH = {0: 1450.0, 1: 1450.0, 2: 600.0} #Can change the demands to test congestion or free flow.
 RAMP_METER_RATE_VPH = 450.0
+CAV_PENETRATION = 0.0   # share of arriving vehicles that are automated (0.0 - 1.0)
 LEAD_DISTURBANCE_DURATION_S = 3.5
 DETECTOR_SAMPLING_INTERVAL_S = 10.0
 
