@@ -580,12 +580,37 @@ class Simulation:
             (950, 622),
         )
 
+    def render_legend(self) -> None:
+        """Key for the vehicle shapes, in the empty space right of the ramp."""
+        fill, outline, text_color = (150, 155, 165), (15, 15, 15), (200, 205, 215)
+        x, y = 960, 300
+        self.screen.blit(self.font_small.render("Legend:", True, text_color), (x, y - 9))
+        x += 60
+
+        # (shape, label, size) — sizes match render_vehicle (car 10x12, truck 16x16)
+        items = (("rect", "Car", (10, 12)), ("rect", "Truck", (16, 16)), ("circle", "CAV", 7))
+        for shape, label, size in items:
+            if shape == "rect":
+                w, h = size
+                r = pygame.Rect(x, y - h // 2, w, h)
+                pygame.draw.rect(self.screen, fill, r, border_radius=3)
+                pygame.draw.rect(self.screen, outline, r, 1, border_radius=3)
+                x += w + 8
+            else:
+                pygame.draw.circle(self.screen, fill, (x + size, y), size)
+                pygame.draw.circle(self.screen, outline, (x + size, y), size, 1)
+                x += 2 * size + 8
+            label_surf = self.font_small.render(label, True, text_color)
+            self.screen.blit(label_surf, (x, y - label_surf.get_height() // 2))
+            x += label_surf.get_width() + 24
+
     def render(self) -> None:
         self.screen.fill((24, 28, 34))
         self.render_header()
         self.render_highway()
         self.render_ramp_meter()
         self.render_vehicles()
+        self.render_legend()
         self.render_telemetry_chart()
         self.render_vehicle_inspector()
         self.present()
