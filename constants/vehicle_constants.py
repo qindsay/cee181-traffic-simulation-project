@@ -5,6 +5,16 @@ IDM_DELTA = 4.0
 FORCED_BRAKE_ACCELERATION_MPS2 = -4.5
 MIN_IDM_ACCELERATION_MPS2 = -9.0
 
+# Linear ACC controller for CAVs: a = k1·(gap − s0 − t_hw·v) + k2·(v_lead − v)
+# Gains from Milanés & Shladover (2014) field-tested ACC.
+ACC_K1 = 0.23               # 1/s², spacing-error gain
+ACC_K2 = 0.07               # 1/s, speed-difference gain
+ACC_TIME_HEADWAY_S = 1.1    # desired time gap t_hw
+ACC_K_SPEED = 0.4           # 1/s, cruise-mode gain toward v0 when no leader
+ACC_MIN_ACCEL_MPS2 = -4.0   # controller bounds (the IDM safety fallback may brake harder)
+ACC_MAX_ACCEL_MPS2 = 2.0
+ACC_UPDATE_INTERVAL_S = 0.1 # new controller command every 0.1 s (held in between)
+
 # Safety limits for lane changes and merges: nobody (the mover or the new
 # follower) may be forced to brake harder than this. Merges near the taper end
 # accept up to MERGE_SAFE_DECEL_END_MPS2 (urgency).
