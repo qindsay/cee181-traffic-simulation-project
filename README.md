@@ -40,25 +40,3 @@ Everything goes to `output/run_<date_time>/`:
 Density, flow and space-mean speed come from Edie's generalized definitions on
 100 m x 30 s space-time cells of the trajectories (point detectors cannot measure
 density). Plot units follow the lectures: veh/h, veh/mi, mph.
-
-## Fixes made (October 2026)
-
-- Ramp merges and lane changes check that the moving car can follow its new
-  leader (before, cars merged a metre behind slower cars and drove through them:
-  about 100 overlaps per 15 simulated minutes; now zero).
-- Merges/lane changes are decided every 0.2 s / 1 s instead of every step, and
-  arrivals are drawn as exponential headways in continuous time, so results do
-  not change with the time step (use dt = 0.05, 0.1 or 0.2 s).
-- Arrivals and vehicle parameters use separate random streams (they used to
-  draw the same numbers).
-- Ramp meter: a released car is no longer stopped and released a second time; a
-  red meter now also stops a car whose leader already passed the line.
-- The stored acceleration is the one actually applied (stopped cars used to
-  report -9 m/s²); vehicle-state log rows use the time after the step.
-- A braking disturbance can no longer override a harder brake that is needed.
-- Ramp cars in the merge zone adjust to the mainline car beside them (at most
-  comfortable braking), so fewer get stuck at the taper end.
-- Exact normal CDF for the z-score percentile.
-
-`v2_proposed/` is a larger reference version (ALINEA control loop, tests,
-scenario files); it is not needed to run this project.
