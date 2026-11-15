@@ -88,6 +88,8 @@ class HighwaySimulator:
         self.meter_rate_vph = simulation_constants.RAMP_METER_RATE_VPH
         self.last_release_time_s = -999.0
         self.meter_is_green = True
+        
+        self.cav_enabled = False
 
         self.detectors = [
             VirtualDetector(sensor_id, lane_id, position_m)
@@ -139,7 +141,7 @@ class HighwaySimulator:
                 is_cav = bool(self.cav_rngs[lane_id].random() < self.cav_penetration)
                 self.entry_queues[lane_id].append(
                     self.factory.create_vehicle(lane_id, spawn_pos, init_speed,
-                                                rng=self.vehicle_rngs[lane_id], is_cav=is_cav)
+                                                rng=self.vehicle_rngs[lane_id], is_cav=self.cav_enabled and is_cav)
                 )
                 self.next_arrival_s[lane_id] += self._next_headway_s(lane_id)
 

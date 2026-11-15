@@ -8,7 +8,7 @@ import pygame
 from constants import analysis_constants, render_constants, simulation_constants
 from models import StatParam
 from simulator import HighwaySimulator
-from vehicles import Vehicle
+from vehicles import CAVVehicle, Vehicle
 from analysis import analyze_traffic, traffic_analysis_main
 
 
@@ -54,10 +54,12 @@ class Simulation:
         self.font_ui = pygame.font.SysFont("Consolas", render_constants.FONT_UI_SIZE)
         self.font_small = pygame.font.SysFont("Segoe UI", render_constants.FONT_SMALL_SIZE)
 
+        self.cav_enabled = False  # kept here so it survives reset()
         self.sim = HighwaySimulator(
             dt_s=simulation_constants.TIME_STEP_S,
             seed=simulation_constants.RANDOM_SEED,
         )
+        self.sim.cav_enabled = self.cav_enabled
 
         self.ROAD_PX_WIDTH = (
             render_constants.WINDOW_WIDTH - 2 * render_constants.MARGIN_X
@@ -350,12 +352,30 @@ class Simulation:
             if vehicle.forced_brake_timer_s > 0
             else speed_to_color(vehicle.speed_mps)
         )
+        
         rect = pygame.Rect(
             int(x - width),
             int(y - height // 2),
             width,
             height,
         )
+
+        is_selected = (
+            self.selected_veh is not None
+            and vehicle.vehicle_id == self.selected_veh.vehicle_id
+        )
+
+        if isinstance(vehicle, CAVVehicle):
+            # CAVs are drawn as circles centred on the same spot a rectangle would be
+            center = rect.center
+            radius = height // 2 + 1
+            pygame.draw.circle(self.screen, color, center, radius)
+            pygame.draw.circle(self.screen, (15, 15, 15), center, radius, 1)
+            if vehicle.acceleration_mps2 < -1.0:
+                pygame.draw.circle(self.screen, (255, 20, 20), center, max(2, radius // 3))
+            if is_selected:
+                pygame.draw.circle(self.screen, (0, 255, 255), center, radius + 4, 2)
+            return
 
         pygame.draw.rect(self.screen, color, rect, border_radius=3)
         pygame.draw.rect(self.screen, (15, 15, 15), rect, 1, border_radius=3)
@@ -367,10 +387,7 @@ class Simulation:
                 (rect.left, rect.top + 2, 3, height - 4),
             )
 
-        if (
-            self.selected_veh is not None
-            and vehicle.vehicle_id == self.selected_veh.vehicle_id
-        ):
+        if is_selected:
             pygame.draw.rect(
                 self.screen,
                 (0, 255, 255),
@@ -401,6 +418,7 @@ class Simulation:
             f"[SPACE] {'Resume' if self.paused else 'Pause'}  |  "
             f"[M] Ramp Meter: {'ON (450 vph)' if self.sim.ramp_meter_enabled else 'OFF'}  |  "
             "[B] Braking Disturbance  |  "
+            f"[C] CAV: {'ON' if self.sim.cav_enabled else 'OFF'} |  "
             f"[UP/DOWN] Speed: {self.sim_speed_mult}x  |  "
             "[R] Reset  |  [P] Export Plots  |  [Click Car] Inspect"
         )
@@ -494,7 +512,8 @@ class Simulation:
 
         percentile = StatParam.z_to_percentile(vehicle.driver_z_score)
         details = (
-            f"Vehicle ID       : #{vehicle.vehicle_id} ({vehicle.veh_type.upper()})",
+            f"Vehicle ID       : #{vehicle.vehicle_id} ({vehicle.veh_type.upper()}"
+            f"{', CAV' if isinstance(vehicle, CAVVehicle) else ''})",
             f"Current Lane     : Lane {vehicle.lane_id}",
             f"Position (x)     : {vehicle.position_m:6.1f} m",
             f"Current Speed (v): {vehicle.speed_mps:6.2f} m/s "
@@ -577,6 +596,7 @@ class Simulation:
             dt_s=simulation_constants.TIME_STEP_S,
             seed=simulation_constants.RANDOM_SEED,
         )
+        self.sim.cav_enabled = self.cav_enabled
         self.hist_l0_speed.clear()
         self.hist_l1_speed.clear()
         self.hist_queue.clear()
@@ -604,6 +624,9 @@ class Simulation:
                 render_constants.MIN_SIM_SPEED_MULTIPLIER,
                 self.sim_speed_mult - 1,
             )
+        elif key == pygame.K_c:
+            self.cav_enabled = not self.cav_enabled
+            self.reset()  # reset() copies self.cav_enabled onto the new simulator
         elif key == pygame.K_r:
             self.reset()
 

@@ -90,7 +90,7 @@ class CAVVehicle(Vehicle):
       harder than its comfortable deceleration b) and that is stronger than
       the ACC command, the IDM braking is used instead — this may exceed −4.
     * The simulator holds the command for ACC_UPDATE_INTERVAL_S between updates.
-    """
+    """ 
     k1: float = vehicle_constants.ACC_K1
     k2: float = vehicle_constants.ACC_K2
     t_hw_s: float = vehicle_constants.ACC_TIME_HEADWAY_S
@@ -173,6 +173,7 @@ class DriverVehicleFactory:
             for name in ("v0_mps", "T_s", "a_mps2", "b_mps2", "s0_m", "politeness"):
                 params[name] = dist[name].mean
             driver_z = 0.0
+            v_type = "cav"
 
         veh = (CAVVehicle if is_cav else Vehicle)(
             vehicle_id=self.next_id,
