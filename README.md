@@ -11,8 +11,8 @@ Then, in your project directory terminal, run
 python3 pygame_main.py
 ```
 
-Keys: `SPACE` pause, `M` ramp meter on/off, `B` lead-vehicle braking disturbance,
-`UP/DOWN` speed, `R` reset, `P` export data + traffic-theory plots, click a car to inspect it.
+Keys: `SPACE` pause, `M` ramp meter on/off, `B` lead-vehicle braking disturbance, `C` enable/disable cav,
+`UP/DOWN` speed, `R` reset, `P` export data + traffic-theory plots, click a car to inspect it. Note: pressing `C` also resets the entire simulation.
 
 ## Traffic-theory plots and data (`analysis/`)
 
