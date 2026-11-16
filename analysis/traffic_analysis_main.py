@@ -107,6 +107,7 @@ def main():
 
     sim = HighwaySimulator(dt_s=args.dt, seed=args.seed, cav_penetration=args.cav)
     sim.ramp_meter_enabled = args.meter
+    sim.cav_enabled = args.cav > 0
     rec = analyze_traffic.TrafficRecorder()
     pending_disturbances = sorted(args.disturbance)
     n_steps = int(round(args.minutes * 60 / args.dt))
