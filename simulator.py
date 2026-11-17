@@ -237,8 +237,10 @@ class HighwaySimulator:
     def _process_discretionary_lane_changes(self) -> None:
         """Apply MOBIL lane changes from lane 1 into lane 0."""
         remaining_lane: List[Vehicle] = []
-        for index, veh in enumerate(self.lanes[1]):
-            current_leader = self.lanes[1][index - 1] if index > 0 else None
+        for veh in self.lanes[1]:
+            # Leader = nearest vehicle ahead that is still in lane 1 (skips any
+            # vehicle that already moved to lane 0 earlier in this pass).
+            current_leader = remaining_lane[-1] if remaining_lane else None
             if self._should_change_to_left_lane(veh, current_leader):
                 veh.lane_id = 0
                 self.lanes[0].append(veh)
@@ -291,9 +293,8 @@ class HighwaySimulator:
             gap_ahead > veh.s0_m
             and gap_behind > minimum_rear_gap
             and follower_new_acceleration > -3.0
-            # FIX: the lane changer itself must not need to brake hard
             and target_acceleration > -vehicle_constants.SAFE_DECEL_MPS2
-            and incentive > 0.35
+            and incentive > simulation_constants.SWITCH_THRESHOLD
         )
 
     def step(self, log_states: bool = False):
