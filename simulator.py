@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import List, Dict, Optional, Tuple
 import numpy as np
 from constants import simulation_constants, vehicle_constants
@@ -90,6 +91,8 @@ class HighwaySimulator:
         self.meter_is_green = True
         
         self.cav_enabled = False
+        # vehicle-steps in which a human used the emergency reflex (should be rare)
+        self.reflex_steps = 0
 
         self.detectors = [
             VirtualDetector(sensor_id, lane_id, position_m)
@@ -107,7 +110,8 @@ class HighwaySimulator:
 
     def trigger_lead_disturbance(self) -> Optional[int]:
         """Forces a downstream vehicle in Lane 1 to brake temporarily."""
-        candidates = [v for v in self.lanes[1] if 500.0 <= v.position_m <= 800.0]
+        x_min, x_max = simulation_constants.DISTURBANCE_ZONE_M
+        candidates = [v for v in self.lanes[1] if x_min <= v.position_m <= x_max]
         if not candidates and self.lanes[1]:
             candidates = [self.lanes[1][0]]
         if candidates:
@@ -232,6 +236,7 @@ class HighwaySimulator:
             and gap_behind > minimum_rear_gap
             and follower_acceleration >= minimum_safe_deceleration
             and own_acceleration >= minimum_safe_deceleration
+            and self._cav_gaps_ok(veh, leader, follower, gap_ahead, gap_behind)
         )
 
     def _process_discretionary_lane_changes(self) -> None:
@@ -295,7 +300,43 @@ class HighwaySimulator:
             and follower_new_acceleration > -3.0
             and target_acceleration > -vehicle_constants.SAFE_DECEL_MPS2
             and incentive > simulation_constants.SWITCH_THRESHOLD
+            and self._cav_gaps_ok(veh, target_leader, target_follower, gap_ahead, gap_behind)
         )
+
+    def _perceived_leader(self, leader: Vehicle, reaction_time_s: float):
+        """The vehicle ahead as a human driver perceives it: where it was one
+        reaction time ago, moved forward at the speed it had then (the driver
+        assumes it kept going). A sudden brake ahead is noticed only after
+        reaction_time_s."""
+        steps_back = int(round(reaction_time_s / self.dt_s))
+        hist = leader.history
+        if steps_back <= 0 or len(hist) < 2:
+            return leader
+        k = min(steps_back, len(hist) - 1)
+        pos, speed = hist[-1 - k]
+        return SimpleNamespace(position_m=pos + speed * k * self.dt_s, speed_mps=speed,
+                               length_m=leader.length_m)
+
+    @staticmethod
+    def _cav_gaps_ok(veh: Vehicle, leader: Optional[Vehicle], follower: Optional[Vehicle],
+                     gap_ahead: float, gap_behind: float) -> bool:
+        """A CAV only changes lanes or merges into a gap that passes the RSS
+        safe-gap test to the vehicle ahead and, if the vehicle behind is also a
+        CAV, to that one too. (Humans cutting in are checked by the usual rules.)"""
+        if isinstance(veh, CAVVehicle) and leader is not None:
+            if gap_ahead < veh.rss_safe_gap(leader.speed_mps):
+                return False
+        if isinstance(veh, CAVVehicle) and isinstance(follower, CAVVehicle):
+            if gap_behind < follower.rss_safe_gap(veh.speed_mps):
+                return False
+        return True
+
+    @staticmethod
+    def _collision_imminent(veh: Vehicle, leader: Vehicle) -> bool:
+        """True situation: gap below the jam gap, or time-to-collision too short."""
+        gap = leader.position_m - veh.position_m - leader.length_m
+        closing = veh.speed_mps - leader.speed_mps
+        return gap < veh.s0_m or (closing > 0.0 and gap / closing < vehicle_constants.HUMAN_REFLEX_TTC_S)
 
     def step(self, log_states: bool = False):
         """Advances simulation by dt_s. Set log_states=True when exporting trajectories."""
@@ -335,7 +376,17 @@ class HighwaySimulator:
                                 obstacles.append(max(0.01, dist_to_line))
                     max_gap = min(obstacles)
 
-                veh.acceleration_mps2 = veh.compute_acceleration(leader, max_gap_m=max_gap)
+                if leader is not None and not isinstance(veh, CAVVehicle) and veh.reaction_time_s > 0.0:
+                    # Human: reacts to the vehicle ahead as it was one reaction time ago
+                    veh.acceleration_mps2 = veh.compute_acceleration(
+                        self._perceived_leader(leader, veh.reaction_time_s), max_gap_m=max_gap)
+                    if self._collision_imminent(veh, leader):
+                        # emergency reflex (safety net): react to the true situation now
+                        veh.acceleration_mps2 = min(veh.acceleration_mps2,
+                                                    veh.compute_acceleration(leader, max_gap_m=max_gap))
+                        self.reflex_steps += 1
+                else:
+                    veh.acceleration_mps2 = veh.compute_acceleration(leader, max_gap_m=max_gap)
 
                 if lane_id == 2 and veh.position_m >= self.merge_zone_start_m:
                     # FIX: in the merge zone a ramp driver also adjusts to the
@@ -348,13 +399,20 @@ class HighwaySimulator:
                             veh.acceleration_mps2,
                             max(veh.compute_acceleration(main_leader), -veh.b_mps2),
                         )
-                # Only update every ACC_UPDATE_INTERVAL_S since real CAVs update at fixed intervals
                 if isinstance(veh, CAVVehicle):
-                    # Controller runs every ACC_UPDATE_INTERVAL_S and holds its
-                    # command in between (no-op when dt equals the interval).
+                    # CAV controller runs every CAV_UPDATE_INTERVAL_S and holds its
+                    # command in between. Comfort jerk limit in normal driving;
+                    # safety braking (beyond the comfort deceleration) is never limited.
                     if self.time_s >= veh.next_acc_update_s - 1e-9:
-                        veh.acc_command_mps2 = veh.acceleration_mps2
-                        veh.next_acc_update_s = self.time_s + vehicle_constants.ACC_UPDATE_INTERVAL_S
+                        command = veh.acceleration_mps2
+                        if command >= -vehicle_constants.CAV_COMFORT_DECEL_MPS2 - 1e-9:
+                            dt_u = vehicle_constants.CAV_UPDATE_INTERVAL_S
+                            command = float(np.clip(
+                                command,
+                                veh.acc_command_mps2 - vehicle_constants.CAV_BRAKE_JERK_MPS3 * dt_u,
+                                veh.acc_command_mps2 + vehicle_constants.CAV_COMFORT_JERK_MPS3 * dt_u))
+                        veh.acc_command_mps2 = command
+                        veh.next_acc_update_s = self.time_s + vehicle_constants.CAV_UPDATE_INTERVAL_S
                     veh.acceleration_mps2 = veh.acc_command_mps2
 
         for lane_id in [0, 1, 2]:
@@ -376,6 +434,7 @@ class HighwaySimulator:
                 veh.acceleration_mps2 = (new_speed - v_old) / self.dt_s
 
                 veh.visual_lane += (float(veh.lane_id) - veh.visual_lane) * min(1.0, self.dt_s * 6.0)
+                veh.history.append((veh.position_m, veh.speed_mps))
 
                 for det in self.detectors:
                     if det.lane_id == lane_id:

@@ -26,6 +26,22 @@ def speed_to_color(speed_mps: float) -> Tuple[int, int, int]:
     return r, g, b
 
 
+# Rectangle height (px) per vehicle type; length comes from the vehicle itself.
+VEHICLE_HEIGHT_PX = {"car": 12, "bus": 14, "truck": 16, "semi": 16}
+
+
+def draw_type_marks(screen, rect: pygame.Rect, veh_type: str) -> None:
+    """Small marks that tell the heavy vehicles apart (color already shows speed).
+    The front of the vehicle is the right edge of the rectangle."""
+    if veh_type == "semi":
+        # line between the cab (front quarter) and the trailer
+        x = rect.right - max(4, rect.width // 4)
+        pygame.draw.line(screen, (15, 15, 15), (x, rect.top + 1), (x, rect.bottom - 2), 2)
+    elif veh_type == "bus":
+        # light strip of windows along the side
+        pygame.draw.rect(screen, (225, 235, 245), (rect.left + 3, rect.top + 3, rect.width - 6, 3))
+
+
 class Simulation:
     def __init__(self):
         pygame.init()
@@ -346,7 +362,7 @@ class Simulation:
     def render_vehicle(self, vehicle: Vehicle) -> None:
         x, y = self.vehicle_screen_position(vehicle)
         width = max(10, int(vehicle.length_m * self.SCALE_X))
-        height = 16 if vehicle.veh_type == "truck" else 12
+        height = VEHICLE_HEIGHT_PX.get(vehicle.veh_type, 12)
         color = (
             (255, 60, 255)
             if vehicle.forced_brake_timer_s > 0
@@ -379,6 +395,7 @@ class Simulation:
 
         pygame.draw.rect(self.screen, color, rect, border_radius=3)
         pygame.draw.rect(self.screen, (15, 15, 15), rect, 1, border_radius=3)
+        draw_type_marks(self.screen, rect, vehicle.veh_type)
 
         if vehicle.acceleration_mps2 < -1.0:
             pygame.draw.rect(
@@ -528,6 +545,9 @@ class Simulation:
             f"Comfort Decel (b): {vehicle.b_mps2:5.2f} m/s²",
             f"Min Jam Gap (s0) : {vehicle.s0_m:5.2f} m",
             f"MOBIL Politeness : {vehicle.politeness:5.2f}",
+            (f"Reaction Time    : {vehicle.reaction_time_s:5.2f} s (controller update)"
+             if isinstance(vehicle, CAVVehicle) else
+             f"Reaction Time    : {vehicle.reaction_time_s:5.2f} s"),
         )
         for index, text in enumerate(details):
             self.screen.blit(
@@ -581,25 +601,27 @@ class Simulation:
         )
 
     def render_legend(self) -> None:
-        """Key for the vehicle shapes, in the empty space right of the ramp."""
+        """Key for the vehicle shapes, below the road on the left (the ramp is on the right)."""
         fill, outline, text_color = (150, 155, 165), (15, 15, 15), (200, 205, 215)
-        x, y = 960, 300
+        x, y = render_constants.MARGIN_X, 378
         self.screen.blit(self.font_small.render("Legend:", True, text_color), (x, y - 9))
         x += 60
 
-        # (shape, label, size) — sizes match render_vehicle (car 10x12, truck 16x16)
-        items = (("rect", "Car", (10, 12)), ("rect", "Truck", (16, 16)), ("circle", "CAV", 7))
-        for shape, label, size in items:
-            if shape == "rect":
-                w, h = size
+        # (type, label, width px) - heights match render_vehicle; CAVs are circles
+        items = (("car", "Car", 10), ("truck", "Truck", 16), ("semi", "Semi-truck", 27),
+                 ("bus", "Bus", 17), ("cav", "CAV", 14))
+        for veh_type, label, w in items:
+            if veh_type == "cav":
+                radius = 7
+                pygame.draw.circle(self.screen, fill, (x + radius, y), radius)
+                pygame.draw.circle(self.screen, outline, (x + radius, y), radius, 1)
+            else:
+                h = VEHICLE_HEIGHT_PX[veh_type]
                 r = pygame.Rect(x, y - h // 2, w, h)
                 pygame.draw.rect(self.screen, fill, r, border_radius=3)
                 pygame.draw.rect(self.screen, outline, r, 1, border_radius=3)
-                x += w + 8
-            else:
-                pygame.draw.circle(self.screen, fill, (x + size, y), size)
-                pygame.draw.circle(self.screen, outline, (x + size, y), size, 1)
-                x += 2 * size + 8
+                draw_type_marks(self.screen, r, veh_type)
+            x += w + 8
             label_surf = self.font_small.render(label, True, text_color)
             self.screen.blit(label_surf, (x, y - label_surf.get_height() // 2))
             x += label_surf.get_width() + 24

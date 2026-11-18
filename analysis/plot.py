@@ -11,6 +11,7 @@ from constants import analysis_constants, vehicle_constants
 BG, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 C = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#6250d6", "#e34948"]
 DPI = 140
+PLURAL = {"car": "cars", "truck": "trucks", "semi": "semi-trucks", "bus": "buses"}
 
 
 # ---------------------------------------------------------------- plots
@@ -168,7 +169,8 @@ def plot_time_space(plt, sim, rec, states, out, run_label, summary) -> None:
     _save(plt, fig, out / "2_time_space.png", f"Time-space diagram (vehicle trajectories) {run_label}")
 
     if wave is not None:
-        summary["Congestion wave speed measured, lane 1, 200-600 m (mph, negative = moving upstream)"] = _r(wave["w_mph"])
+        w0, w1 = analysis_constants.WAVE_WINDOW_M
+        summary[f"Congestion wave speed measured, lane 1, {w0:.0f}-{w1:.0f} m (mph, negative = moving upstream)"] = _r(wave["w_mph"])
         summary["  fit quality (average correlation, 0-1)"] = _r(wave["score"], 2)
     else:
         summary["Congestion wave speed measured"] = ("not clear enough to measure automatically in this run; "
@@ -197,9 +199,9 @@ def _trajectory_segments(rec, lane):
 
 
 def _draw_wave_lines(ax, sim, rec, wave, states, w_idm) -> None:
-    """Reference wave lines, drawn from x = 600 m at the moment lane 1 is
-    slowest there: compare their slopes with the dark stripes."""
-    x_start, x_stop = 600.0, 200.0   # the stretch where the merge waves are measured
+    """Reference wave lines, drawn from the downstream end of the wave window
+    at the moment lane 1 is slowest there: compare their slopes with the dark stripes."""
+    x_stop, x_start = analysis_constants.WAVE_WINDOW_M   # the stretch where the merge waves are measured
     near_start = [s for s in rec.traj
                   if s.lane_id == 1 and analysis_constants.WARMUP_S < s.time_s < sim.time_s - 120
                   and abs(s.position_m - x_start) < 25]
@@ -219,7 +221,7 @@ def _draw_wave_lines(ax, sim, rec, wave, states, w_idm) -> None:
         t_end = min(t_start + (x_stop - x_start) / w, sim.time_s)
         ax.plot([t_start, t_end], [x_start, x_start + w * (t_end - t_start)], color=C[6], lw=2.0, ls=ls,
                 label=label)
-    ax.legend(loc="upper right", fontsize=8, title="wave speed lines (start at 600 m)", title_fontsize=8,
+    ax.legend(loc="upper right", fontsize=8, title=f"wave speed lines (start at {x_start:.0f} m)", title_fontsize=8,
               framealpha=0.9, frameon=True, facecolor=BG, edgecolor=GRID)
 
 
@@ -230,17 +232,21 @@ def plot_cumulative_counts(plt, sim, rec, out) -> None:
     down = sorted(c.time_s for c in rec.crossings if c.station == "downstream")
     if not (up and down):
         return
+    x_up = analysis_constants.STATIONS["upstream"][0]
+    x_down = analysis_constants.STATIONS["downstream"][0]
     fig, (ax_n, ax_inside) = plt.subplots(1, 2, figsize=(13, 4.3), constrained_layout=True)
     ax_n.step(up, np.arange(1, len(up) + 1), where="post", color=C[0],
-              label="N upstream (x = 220 m + ramp entrance)")
-    ax_n.step(down, np.arange(1, len(down) + 1), where="post", color=C[1], label="N downstream (x = 850 m)")
+              label=f"N upstream (x = {x_up:.0f} m + ramp entrance)")
+    ax_n.step(down, np.arange(1, len(down) + 1), where="post", color=C[1],
+              label=f"N downstream (x = {x_down:.0f} m)")
     ax_n.set(xlabel="time t (s)", ylabel="cumulative vehicles N(t)",
              title="Cumulative counts: vertical gap = vehicles in between")
     ax_n.legend(loc="upper left", fontsize=8)
     t_grid = np.arange(0, sim.time_s, 5.0)
     inside = np.searchsorted(up, t_grid, side="right") - np.searchsorted(down, t_grid, side="right")
     ax_inside.plot(t_grid, inside, color=C[2])
-    ax_inside.set(xlabel="time t (s)", ylabel="vehicles between 220 m and 850 m",
+    ax_inside.set(xlabel="time t (s)",
+                  ylabel=f"vehicles between {x_up:.0f} m and {x_down:.0f} m",
                   title="Accumulation N_up(t) - N_down(t)")
     _save(plt, fig, out / "3_cumulative_counts.png", "Cumulative vehicle counts (queueing view)")
 
@@ -305,16 +311,16 @@ def plot_spot_speeds(plt, rec, out, summary) -> None:
 
 def plot_micro_fundamental(plt, rec, out) -> None:
     """Figure 6: simulated (gap, speed) states vs the IDM equilibrium curve
-    s_e(v) = (s0 + v T) / sqrt(1 - (v / v0)^delta) of the mean car and truck."""
+    s_e(v) = (s0 + v T) / sqrt(1 - (v / v0)^delta) of the mean vehicle of each type."""
     fig, ax = plt.subplots(figsize=(8, 4.8), constrained_layout=True)
-    for veh_type, col in (("car", C[0]), ("truck", C[1])):
+    for veh_type, col in zip(vehicle_constants.VEHICLE_TYPES, C):
         states = np.array([(s.gap_to_leader_m, s.speed_mps) for s in rec.traj
                            if s.veh_type == veh_type and s.lane_id in analysis_constants.MAINLINE_LANES
                            and not math.isnan(s.gap_to_leader_m) and s.time_s > analysis_constants.WARMUP_S
                            and s.gap_to_leader_m < 150])
         if len(states):
             ax.scatter(states[:, 0], states[:, 1] * analysis_constants.MPS_TO_MPH, s=4, alpha=0.25, lw=0, color=col,
-                       label=f"{veh_type}s (simulated)")
+                       label=f"{PLURAL.get(veh_type, veh_type + 's')} (simulated)")
         p = {n: vals[0] for n, vals in vehicle_constants.VEHICLE_DISTRIBUTION_PARAMETERS[veh_type].items()}
         vv = np.linspace(0, p["v0_mps"] * 0.995, 300)
         s_eq = (p["s0_m"] + vv * p["T_s"]) / np.sqrt(1 - (vv / p["v0_mps"]) ** vehicle_constants.IDM_DELTA)

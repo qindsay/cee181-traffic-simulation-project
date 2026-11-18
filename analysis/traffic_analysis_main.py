@@ -98,8 +98,8 @@ def main():
     ap.add_argument("--seed", type=int, default=simulation_constants.RANDOM_SEED)
     ap.add_argument("--dt", type=float, default=simulation_constants.TIME_STEP_S)
     ap.add_argument("--meter", action="store_true", help="turn the ramp meter on")
-    ap.add_argument("--cav", type=float, default=simulation_constants.CAV_PENETRATION,
-                    help="share of arriving vehicles that are automated (0-1)")
+    ap.add_argument("--cav", type=float, default=0.0,
+                    help="share of arriving passenger cars that are automated (0-1); default 0 = no CAVs")
     ap.add_argument("--disturbance", type=float, nargs="*", default=[],
                     help="times (s) when a lane-1 vehicle brakes hard, like pressing [B]")
     ap.add_argument("--out", default=None)

@@ -88,7 +88,8 @@ class TrafficRecorder:
             "vehicle_id": v.vehicle_id, "veh_type": v.veh_type, "origin_lane": lane,
             "first_seen_s": round(t, 2), "driver_z_score": v.driver_z_score,
             "v0_mps": v.v0_mps, "T_s": v.T_s, "a_mps2": v.a_mps2, "b_mps2": v.b_mps2,
-            "s0_m": v.s0_m, "politeness": v.politeness, "length_m": v.length_m}
+            "s0_m": v.s0_m, "politeness": v.politeness, "length_m": v.length_m,
+            "reaction_time_s": v.reaction_time_s}
 
     def _record_crossings(self, v, lane: int, prev: tuple, t: float, dt: float) -> None:
         """Log every station passed during the last step, interpolating the
@@ -161,7 +162,9 @@ def fit_greenberg(k, u):
             "r2": _r_squared(u, intercept + slope * np.log(k))}
 
 
-def measure_wave_speed(rec: TrafficRecorder, lane: int = 1, x_min: float = 200.0, x_max: float = 600.0,
+def measure_wave_speed(rec: TrafficRecorder, lane: int = 1,
+                       x_min: float = analysis_constants.WAVE_WINDOW_M[0],
+                       x_max: float = analysis_constants.WAVE_WINDOW_M[1],
                        bin_m: float = 25.0):
     """Average speed of the congestion (stop-and-go) waves, from the trajectories.
 

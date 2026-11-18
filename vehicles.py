@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
 
@@ -27,6 +28,10 @@ class Vehicle:
     delta: float = vehicle_constants.IDM_DELTA
     forced_brake_timer_s: float = 0.0  # Used for interactive disturbance testing
     meter_released: bool = False       # FIX: got its green at the ramp meter
+    reaction_time_s: float = 0.0       # human: sees the vehicle ahead this late (CAV: update interval)
+    # (position, speed) after each step, newest last; lets followers see this
+    # vehicle "as it was" one reaction time ago
+    history: deque = field(default_factory=lambda: deque(maxlen=80), repr=False, compare=False)
 
     def compute_acceleration(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float] = None) -> float:
         """Calculates longitudinal acceleration using the Intelligent Driver Model (IDM).
@@ -79,50 +84,68 @@ class Vehicle:
 
 @dataclass
 class CAVVehicle(Vehicle):
-    """Automated vehicle: linear ACC (constant time-gap) law + IDM safety fallback.
+    """Automated vehicle with our CAV controller (see the CAV block in
+    constants/vehicle_constants.py for the equations and parameter sources).
 
-        a_ACC = k1 · (gap − s0 − t_hw · v) + k2 · (v_lead − v)
-
-    * Inputs are only the current gap to the vehicle ahead and its current
-      speed (what an on-board radar would measure) — no future positions.
-    * a_ACC is clipped to [ACC_MIN_ACCEL, ACC_MAX_ACCEL] (about −4 / +2 m/s²).
-    * Safety fallback: if IDM is in its emergency regime (it wants to brake
-      harder than its comfortable deceleration b) and that is stronger than
-      the ACC command, the IDM braking is used instead — this may exceed −4.
-    * The simulator holds the command for ACC_UPDATE_INTERVAL_S between updates.
-    """ 
-    k1: float = vehicle_constants.ACC_K1
-    k2: float = vehicle_constants.ACC_K2
-    t_hw_s: float = vehicle_constants.ACC_TIME_HEADWAY_S
-    k_speed: float = vehicle_constants.ACC_K_SPEED
-    acc_command_mps2: float = 0.0       # last controller output (zero-order hold)
+    compute_acceleration() returns the controller's command for the current
+    situation (steps 1-4). The simulator calls it every CAV_UPDATE_INTERVAL_S,
+    applies the comfort jerk limit (step 5) and holds the command in between.
+    Lane-change and merge checks call it too, so it has no side effects.
+    """
+    acc_command_mps2: float = 0.0       # last command (held between updates)
     next_acc_update_s: float = 0.0      # sim time of the next controller update
 
-    def _acc_law(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float]) -> float:
-        # Cruise mode: speed control toward the set speed v0 (the ACC law has no
-        # free-road term, so a lone CAV would otherwise never accelerate).
-        cruise_acc = self.k_speed * (self.v0_mps - self.speed_mps)
-        if lead_veh is None and max_gap_m is None:
-            acc = cruise_acc
-        else:
-            if lead_veh is not None:
-                gap = lead_veh.position_m - self.position_m - lead_veh.length_m
-                lead_speed = lead_veh.speed_mps
-            else:
-                gap = max_gap_m     # fixed obstacle (red meter / taper end) = stopped leader
-                lead_speed = 0.0
-            spacing_error = gap - self.s0_m - self.t_hw_s * self.speed_mps
-            acc = min(cruise_acc, self.k1 * spacing_error + self.k2 * (lead_speed - self.speed_mps))
-        return float(np.clip(acc, vehicle_constants.ACC_MIN_ACCEL_MPS2, vehicle_constants.ACC_MAX_ACCEL_MPS2))
+    def compute_acceleration(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float] = None) -> float:
+        acc = self._control(None, 0.0, 0.0)                  # free road: cruise
+        if lead_veh is not None:
+            gap = lead_veh.position_m - self.position_m - lead_veh.length_m
+            # radar measures the leader's speed and (from its change) its braking
+            acc = min(acc, self._control(gap, lead_veh.speed_mps,
+                                         getattr(lead_veh, "acceleration_mps2", 0.0)))
+        if max_gap_m is not None:                             # red meter / taper end = stopped "leader"
+            acc = min(acc, self._control(max_gap_m, 0.0, 0.0))
+        if self.forced_brake_timer_s > 0.0:                   # [B] disturbance applies to CAVs too
+            acc = min(acc, vehicle_constants.FORCED_BRAKE_ACCELERATION_MPS2)
+        return acc
 
-    def _idm_single(self, lead_veh: Optional['Vehicle'], max_gap_m: Optional[float]) -> float:
-        acc_cmd = self._acc_law(lead_veh, max_gap_m)
-        if lead_veh is None and max_gap_m is None:
-            return acc_cmd
-        idm_acc = Vehicle._idm_single(self, lead_veh, max_gap_m)
-        if idm_acc < -self.b_mps2 and idm_acc < acc_cmd:
-            return idm_acc          # safety fallback: emergency IDM braking
-        return acc_cmd
+    def rss_safe_gap(self, lead_speed_mps: float) -> float:
+        """Step 4: RSS minimum safe gap - no collision even if the vehicle ahead
+        brakes as hard as possible right now."""
+        v, rho = self.speed_mps, vehicle_constants.RSS_RESPONSE_TIME_S
+        a_acc = vehicle_constants.RSS_ACCEL_DURING_RESPONSE_MPS2
+        d = (v * rho + 0.5 * a_acc * rho ** 2
+             + (v + rho * a_acc) ** 2 / (2.0 * vehicle_constants.RSS_CAV_BRAKE_MPS2)
+             - lead_speed_mps ** 2 / (2.0 * vehicle_constants.RSS_LEAD_MAX_BRAKE_MPS2))
+        return max(d, 0.0) + self.s0_m
+
+    def _control(self, gap_m: Optional[float], lead_speed_mps: float, lead_accel_mps2: float) -> float:
+        v = self.speed_mps
+        # Step 3: normal driving = the smaller of cruise and follow, within comfort limits
+        acc = vehicle_constants.CAV_K_CRUISE * (self.v0_mps - v)
+        if gap_m is not None and gap_m <= vehicle_constants.CAV_SENSOR_RANGE_M:
+            desired_gap = self.s0_m + vehicle_constants.CAV_TIME_GAP_S * v          # step 2
+            follow = (vehicle_constants.CAV_K_GAP * (gap_m - desired_gap)
+                      + vehicle_constants.CAV_K_SPEED * (lead_speed_mps - v))
+            acc = min(acc, follow)
+        acc = float(np.clip(acc, -vehicle_constants.CAV_COMFORT_DECEL_MPS2,
+                            vehicle_constants.CAV_COMFORT_ACCEL_MPS2))
+
+        # Step 4: safety check (overrides comfort)
+        if gap_m is not None and gap_m < self.rss_safe_gap(lead_speed_mps):
+            closing = v - lead_speed_mps
+            if closing > 0.0:
+                # closing in: brake as hard as the leader brakes, plus enough to
+                # cancel the closing speed before the gap drops below 1 m
+                needed = (max(0.0, -lead_accel_mps2)
+                          + closing ** 2 / (2.0 * max(gap_m - 1.0, 0.1)))
+                brake = min(vehicle_constants.CAV_MAX_BRAKE_MPS2,
+                            max(vehicle_constants.CAV_COMFORT_DECEL_MPS2, needed))
+                acc = min(acc, -brake)
+            else:
+                # gap is opening: do not speed up until the safe gap is restored,
+                # and brake at least as hard as the leader does
+                acc = min(acc, 0.0, lead_accel_mps2)
+        return acc
 
 
 class DriverVehicleFactory:
@@ -140,13 +163,15 @@ class DriverVehicleFactory:
         }
         self.veh_types = vehicle_constants.VEHICLE_TYPES
         self.veh_probs = vehicle_constants.VEHICLE_TYPE_PROBABILITIES
+        self.ramp_veh_probs = vehicle_constants.RAMP_VEHICLE_TYPE_PROBABILITIES
 
     def create_vehicle(self, lane_id: int, position_m: float, initial_speed_mps: float,
                        rng: Optional[np.random.Generator] = None, is_cav: bool = False) -> Vehicle:
         # FIX: the simulator passes one random stream per lane, so a vehicle's
         # parameters do not depend on what happened in the other lanes.
         rng = rng if rng is not None else self.rng
-        v_type = str(rng.choice(self.veh_types, p=self.veh_probs))
+        probs = self.ramp_veh_probs if lane_id == 2 else self.veh_probs
+        v_type = str(rng.choice(self.veh_types, p=probs))
         dist = self.distributions[v_type]
         driver_z = float(
             np.clip(
@@ -157,6 +182,7 @@ class DriverVehicleFactory:
         )
 
         params = dict(
+            reaction_time_s=dist["reaction_time_s"].sample(rng, z_override=-driver_z),
             length_m=dist["length_m"].sample(rng),
             v0_mps=dist["v0_mps"].sample(rng, z_override=driver_z),
             T_s=dist["T_s"].sample(rng, z_override=-driver_z),
@@ -167,11 +193,20 @@ class DriverVehicleFactory:
         )
         # The same random numbers are drawn either way, so the human drivers in
         # the stream are identical whatever the CAV penetration is.
+        # Only passenger cars can be automated (trucks, semis, buses stay human).
+        is_cav = is_cav and v_type == "car"
         if is_cav:
-            # Automated driving is not randomized: use the mean parameters
+            # Automated driving is not randomized: fixed controller settings
             # (vehicle length is physical, so it stays sampled).
-            for name in ("v0_mps", "T_s", "a_mps2", "b_mps2", "s0_m", "politeness"):
-                params[name] = dist[name].mean
+            params.update(
+                v0_mps=vehicle_constants.CAV_DESIRED_SPEED_MPS,
+                T_s=vehicle_constants.CAV_TIME_GAP_S,
+                a_mps2=vehicle_constants.CAV_COMFORT_ACCEL_MPS2,
+                b_mps2=vehicle_constants.CAV_COMFORT_DECEL_MPS2,
+                s0_m=vehicle_constants.CAV_STANDSTILL_GAP_M,
+                politeness=dist["politeness"].mean,
+                reaction_time_s=vehicle_constants.CAV_UPDATE_INTERVAL_S,
+            )
             driver_z = 0.0
             v_type = "cav"
 

@@ -14,13 +14,44 @@ python3 pygame_main.py
 Keys: `SPACE` pause, `M` ramp meter on/off, `B` lead-vehicle braking disturbance, `C` enable/disable cav,
 `UP/DOWN` speed, `R` reset, `P` export data + traffic-theory plots, click a car to inspect it. Note: pressing `C` also resets the entire simulation.
 
+## Drivers and CAVs
+
+- **Human drivers** use the IDM with Gaussian (z-score) parameters, including a
+  **reaction time** (0.7 s on average): each driver sees the vehicle ahead as it
+  was one reaction time ago. An emergency reflex (time-to-collision < 1.5 s)
+  makes them react immediately when a crash is about to happen.
+- **CAVs** (circles in the window; only passenger cars can be automated) use our
+  own controller, updated every 0.1 s: constant 1.0 s time gap, cruise/follow law
+  with string-stable gains, an RSS safety-distance check that overrides comfort,
+  and comfort limits on acceleration (+1.5 / -3 m/s²) and jerk. All settings and
+  equations are in the CAV block of `constants/vehicle_constants.py`.
+- CAV share: `C` in the window uses `CAV_PENETRATION` (20%); the command line uses
+  `--cav` (default 0 = no CAVs).
+
 ## Traffic-theory plots and data (`analysis/`)
 
 Press `P` in the window (after at least 3 simulated minutes), or run without a window:
 
 ```
 python3 -m analysis.traffic_analysis_main --minutes 20
+python3 -m analysis.traffic_analysis_main --minutes 20 --cav 0.25 --seed 7 --disturbance 400 800 --out output/cav0.25_seed7
 python3 -m analysis.traffic_analysis_main --minutes 20 --meter --disturbance 400 800
+```
+
+Options: `--cav` share of cars that are CAVs (0-1, default 0), `--seed` random
+traffic (default 42), `--disturbance` times (s) when a lane-1 vehicle brakes hard,
+`--meter` ramp meter on, `--dt` time step (keep 0.1 for all comparison runs),
+`--out` output folder.
+
+FOR DATA ANALYSIS WE WILL USE 3 SEEDS FOR 3 LEVELS OF CAV CONCENTRATION.
+USE THIS SCRIPT IN CMD:
+```
+for %c in (0 0.25 0.5) do for %s in (42 1 7) do py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav %c --seed %s --disturbance 400 800 --out output\cav%c_seed%s
+```
+
+OR USE THIS SCRIPT IN POWERSHELL:
+```
+foreach ($cav in 0, 0.25, 0.5) { foreach ($seed in 42, 1, 7) { py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav $cav --seed $seed --disturbance 400 800 --out "output\cav$($cav)_seed$seed" } }
 ```
 
 Everything goes to `output/run_<date_time>/`:
