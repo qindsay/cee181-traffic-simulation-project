@@ -45,10 +45,10 @@ traffic (default 42), `--disturbance` times (s) when a lane-1 vehicle brakes har
 
 FOR DATA ANALYSIS WE WILL USE 3 SEEDS FOR 3 LEVELS OF CAV CONCENTRATION.
 USE THIS SCRIPT IN CMD:
-for %c in (0 0.25 0.5) do for %s in (42 1 7) do py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav %c --seed %s --disturbance 400 800 --out output\cav%c_seed%s
+```for %c in (0 0.25 0.5) do for %s in (42 1 7) do py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav %c --seed %s --disturbance 400 800 --out output\cav%c_seed%s ```
 
 OR USE THIS SCRIPT IN POWERSHELL:
-foreach ($cav in 0, 0.25, 0.5) { foreach ($seed in 42, 1, 7) { py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav $cav --seed $seed --disturbance 400 800 --out "output\cav$($cav)_seed$seed" } }
+```foreach ($cav in 0, 0.25, 0.5) { foreach ($seed in 42, 1, 7) { py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav $cav --seed $seed --disturbance 400 800 --out "output\cav$($cav)_seed$seed" } }```
 
 Everything goes to `output/run_<date_time>/`:
 
