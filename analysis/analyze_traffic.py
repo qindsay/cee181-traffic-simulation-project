@@ -162,6 +162,62 @@ def fit_greenberg(k, u):
             "r2": _r_squared(u, intercept + slope * np.log(k))}
 
 
+def top_flow_capacity(k, q, n: int = 10) -> Optional[dict]:
+    """Capacity from the data itself: the average flow of the n highest-flow
+    cells (n = 10), and the average density of those cells."""
+    k = np.asarray(k, dtype=float)
+    q = np.asarray(q, dtype=float)
+    if len(q) < n:
+        return None
+    idx = np.argsort(q)[-n:]
+    return {"qmax_vph": float(q[idx].mean()), "kc_vpm": float(k[idx].mean()),
+            "k_top": k[idx], "q_top": q[idx]}
+
+
+def fit_smooth_curve(k, q, bin_vpm: float = 5.0, min_cells: int = 5,
+                     percentile: float = 90.0, bandwidth_vpm: float = 7.0) -> Optional[dict]:
+    """Our own smooth flow-density trend line, drawn along the upper part of
+    the data (no assumed shape like Greenshields or Greenberg).
+
+    1. Group the cells into density bins 5 veh/mi/lane wide.
+    2. In every bin with at least 5 cells, take the 90th-percentile flow
+       (the flow that only 10% of the cells in that bin exceed).
+    3. Draw a smooth line through those points (plus the origin) with a
+       bell-curve weighted local straight-line fit (LOESS-style).
+    Using the 90th percentile puts the line along the top of the data cloud,
+    where the road is working at its best, instead of through the middle."""
+    k = np.asarray(k, dtype=float)
+    q = np.asarray(q, dtype=float)
+    if len(k) < 20:
+        return None
+    edges = np.arange(0.0, k.max() + bin_vpm, bin_vpm)
+    pk, pq, pn = [0.0], [0.0], [float(min_cells)]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = (k >= lo) & (k < hi)
+        if sel.sum() >= min_cells:
+            pk.append(float(k[sel].mean()))
+            pq.append(float(np.percentile(q[sel], percentile)))
+            pn.append(float(sel.sum()))
+    pk, pq, pn = np.array(pk), np.array(pq), np.sqrt(np.array(pn))
+    # stop where the data runs out (a gap of more than 3 empty bins)
+    jump = np.where(np.diff(pk) > 3 * bin_vpm)[0]
+    if len(jump):
+        pk, pq, pn = pk[:jump[0] + 1], pq[:jump[0] + 1], pn[:jump[0] + 1]
+    if len(pk) < 4:
+        return None
+    grid = np.arange(0.0, pk.max() + 0.25, 0.5)
+    curve = []
+    for g in grid:
+        w = pn * np.exp(-0.5 * ((pk - g) / bandwidth_vpm) ** 2)
+        X = np.vstack([np.ones_like(pk), pk - g]).T
+        A = X.T @ (X * w[:, None])
+        curve.append(np.linalg.solve(A, X.T @ (w * pq))[0])
+    curve = np.clip(np.array(curve), 0, None)
+    i = int(np.argmax(curve))
+    return {"k_vpm": grid, "q_vph": curve, "qmax_vph": float(curve[i]), "kc_vpm": float(grid[i]),
+            "points_k": pk, "points_q": pq, "percentile": percentile, "r2": float("nan")}
+
+
 def measure_wave_speed(rec: TrafficRecorder, lane: int = 1,
                        x_min: float = analysis_constants.WAVE_WINDOW_M[0],
                        x_max: float = analysis_constants.WAVE_WINDOW_M[1],
