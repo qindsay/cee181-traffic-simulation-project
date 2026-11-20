@@ -72,6 +72,8 @@ def plot_fundamental_diagrams(plt, cells, out, run_label, summary) -> Optional[d
     congested = k >= gs["kc_vpm"]
     gb = analyze_traffic.fit_greenberg(k[congested], u[congested]) if congested.sum() >= 10 else None
 
+    # our own smooth curve drawn through the data; its peak is the capacity
+    sm = analyze_traffic.fit_smooth_curve(k, q)
     # model curves as (speed array, density array, color, label)
     k_gs = np.linspace(1, max(gs["kj_vpm"], k.max() * 1.1), 300)
     curves = [(np.clip(gs["uf_mph"] * (1 - k_gs / gs["kj_vpm"]), 0, None), k_gs, INK, "Greenshields (all cells)")]
@@ -79,6 +81,11 @@ def plot_fundamental_diagrams(plt, cells, out, run_label, summary) -> Optional[d
         k_gb = np.linspace(gs["kc_vpm"] * 0.6, max(gb["kj_vpm"], k.max()), 200)
         curves.append((np.clip(gb["c_mph"] * np.log(gb["kj_vpm"] / k_gb), 0, None), k_gb, C[5],
                        "Greenberg (congested cells)"))
+
+    if sm is not None:
+        pos = sm["k_vpm"] > 0
+        curves.append((sm["q_vph"][pos] / sm["k_vpm"][pos], sm["k_vpm"][pos], C[6],
+                       "smooth trend line (90th percentile)"))
 
     fig, (ax_qk, ax_uk, ax_uq) = plt.subplots(1, 3, figsize=(14, 4.3), constrained_layout=True)
     for lane in analysis_constants.MAINLINE_LANES:
@@ -91,10 +98,20 @@ def plot_fundamental_diagrams(plt, cells, out, run_label, summary) -> Optional[d
         ax_uk.scatter(lane_k, lane_u, **kw)
         ax_uq.scatter(lane_q, lane_u, **kw)
     for cu, ck, col, name in curves:
-        ax_qk.plot(ck, cu * ck, color=col, label=name)
-        ax_uk.plot(ck, cu, color=col, label=name)
-        ax_uq.plot(cu * ck, cu, color=col, label=name)
+        lw = 2.4 if name.startswith("smooth") else 1.5
+        ax_qk.plot(ck, cu * ck, color=col, label=name, lw=lw)
+        ax_uk.plot(ck, cu, color=col, label=name, lw=lw)
+        ax_uq.plot(cu * ck, cu, color=col, label=name, lw=lw)
 
+
+    top = analyze_traffic.top_flow_capacity(k, q)
+    if top is not None:
+        ax_qk.scatter(top["k_top"], top["q_top"], s=36, facecolor="none", edgecolor=C[6], lw=1.4, zorder=5,
+                      label="10 highest-flow cells")
+        ax_qk.axhline(top["qmax_vph"], color=C[6], lw=1.2, ls="--",
+                      label=f"capacity = average of top 10 = {top['qmax_vph']:.0f} veh/h/lane")
+        summary["Capacity = average of the 10 highest cell flows (veh/h/lane)"] = _r(top["qmax_vph"], 0)
+        summary["Average density of those 10 cells (veh/mi/lane)"] = _r(top["kc_vpm"], 0)
     ax_qk.scatter([gs["kc_vpm"]], [gs["qmax_vph"]], marker="D", s=40, color=INK, zorder=4)
     ax_qk.annotate(f"Greenshields capacity\nq_max = {gs['qmax_vph']:.0f} veh/h/lane\n"
                    f"at k_c = {gs['kc_vpm']:.0f} veh/mi/lane",
@@ -104,6 +121,9 @@ def plot_fundamental_diagrams(plt, cells, out, run_label, summary) -> Optional[d
     ax_uk.set(xlabel="density k (veh/mi/lane)", ylabel="space-mean speed u (mph)", title="Speed - density")
     ax_uq.set(xlabel="flow q (veh/h/lane)", ylabel="space-mean speed u (mph)", title="Speed - flow")
     equations = f"Greenshields: u = {gs['uf_mph']:.1f} {gs['slope']:+.3f} k  (R² {gs['r2']:.2f})"
+    if sm is not None:
+        equations += (f"\nSmooth trend line (90th pct): peak {sm['qmax_vph']:.0f} veh/h/lane"
+                      f" at k {sm['kc_vpm']:.0f} veh/mi/lane")
     if gb is not None:
         equations += f"\nGreenberg: u = {gb['c_mph']:.1f} ln({gb['kj_vpm']:.0f} / k)  (R² {gb['r2']:.2f})"
     ax_uk.text(0.98, 0.97, equations, transform=ax_uk.transAxes, ha="right", va="top", fontsize=8)
@@ -111,11 +131,16 @@ def plot_fundamental_diagrams(plt, cells, out, run_label, summary) -> Optional[d
         ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)
     ax_qk.set_ylim(0, max(q.max(), gs["qmax_vph"]) * 1.25)
-    ax_qk.legend(loc="upper left", fontsize=8)
+    ax_qk.legend(loc="lower right", fontsize=8)
     _save(plt, fig, out / "1_fundamental_diagrams.png",
           f"Fundamental diagrams from simulated trajectories (Edie cells "
           f"{analysis_constants.CELL_LENGTH_M:.0f} m x {analysis_constants.CELL_DURATION_S:.0f} s) {run_label}")
 
+    if sm is not None:
+        summary.update({
+            "Peak of smooth trend line, 90th percentile (veh/h/lane)": _r(sm["qmax_vph"], 0),
+            "Density at peak of smooth trend line (veh/mi/lane)": _r(sm["kc_vpm"], 0),
+        })
     summary.update({
         "Greenshields free-flow speed uf (mph)": _r(gs["uf_mph"]),
         "Greenshields jam density kj (veh/mi/lane)": _r(gs["kj_vpm"]),
