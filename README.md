@@ -43,22 +43,11 @@ traffic (default 42), `--disturbance` times (s) when a lane-1 vehicle brakes har
 `--meter` ramp meter on, `--dt` time step (keep 0.1 for all comparison runs),
 `--out` output folder.
 
-FOR DATA ANALYSIS WE WILL USE 3 SEEDS FOR 3 LEVELS OF CAV CONCENTRATION.
-USE THIS SCRIPT IN CMD:
-```
-for %c in (0 0.25 0.5) do for %s in (42 1 7) do py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav %c --seed %s --disturbance 400 800 --out output\cav%c_seed%s
-```
-
-OR USE THIS SCRIPT IN POWERSHELL:
-```
-foreach ($cav in 0, 0.25, 0.5) { foreach ($seed in 42, 1, 7) { py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav $cav --seed $seed --disturbance 400 800 --out "output\cav$($cav)_seed$seed" } }
-```
-
 Everything goes to `output/run_<date_time>/`:
 
 | File | What it shows |
 |---|---|
-| `1_fundamental_diagrams.png` | flow-density, speed-density, speed-flow with Greenshields and Greenberg fits (capacity, critical and jam density) |
+| `1_fundamental_diagrams.png` | flow-density, speed-density, speed-flow with Greenshields, Greenberg and our own smooth curve through the data (its peak = capacity) |
 | `2_time_space.png` | vehicle trajectories colored by speed; congestion wave speed, measured vs. Δq/Δk and IDM theory |
 | `3_cumulative_counts.png` | cumulative vehicle counts upstream vs downstream (queueing view) |
 | `4_headways.png` | time-headway distributions vs exponential (Poisson) and shifted exponential |
@@ -71,3 +60,42 @@ Everything goes to `output/run_<date_time>/`:
 Density, flow and space-mean speed come from Edie's generalized definitions on
 100 m x 30 s space-time cells of the trajectories (point detectors cannot measure
 density). Plot units follow the lectures: veh/h, veh/mi, mph.
+
+## Reproducing the mid-report figures and tables
+
+1. Run the 9 experiments (3 CAV shares x 3 seeds, 20 min each, braking events at 400 s and 800 s).
+   Windows Command Prompt:
+
+   ```
+   for %c in (0 0.25 0.5) do for %s in (42 1 7) do py -3.12 -m analysis.traffic_analysis_main --minutes 20 --cav %c --seed %s --disturbance 400 800 --out output/cav%c_seed%s
+   ```
+
+   macOS / Linux:
+
+   ```
+   for c in 0 0.25 0.5; do for s in 42 1 7; do python3 -m analysis.traffic_analysis_main --minutes 20 --cav $c --seed $s --disturbance 400 800 --out output/cav${c}_seed${s}; done; done
+   ```
+
+2. Build the report figures and tables from those 9 folders (also runs the 10-follower string-stability test):
+
+   ```
+   python3 -m analysis.report_figures --runs output --out output/report
+   ```
+
+| Report item | File |
+|---|---|
+| Fig. 1 simulator screenshot | `output/report/fig1_simulator.png` (needs pygame) |
+| Fig. 2 string-stability test | `output/report/fig6_string_stability.png` |
+| Fig. 3 speed, time stopped, congested intervals | `output/report/fig2_headline.png` |
+| Fig. 4 time-space diagrams | `output/report/fig3_time_space.png` |
+| Fig. 5 fundamental diagrams with top-10 capacity | `output/report/fig4_fundamental.png` |
+| Fig. 6 spot speeds | `output/report/fig5_spot_speeds.png` |
+| Table 4 run results | `output/report/table_runs.csv` |
+| Table 5 capacity estimates | `output/report/table_fd_fits.csv` |
+| Appendix C graphs | `output/cav0_seed42/` and `output/cav0.5_seed42/` (made by each run) |
+
+Capacity is measured directly from the data as the average flow of the 10
+highest-flow Edie cells (`top_flow_capacity` in `analysis/analyze_traffic.py`).
+A smooth trend line along the top of the cells (`fit_smooth_curve`: 90th-percentile
+flow in 5 veh/mi density bins, smoothed) shows the shape of the diagram. A 10 s detector interval
+counts as congested when its mean speed is below 15 m/s for at least 3 intervals in a row.
